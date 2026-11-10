@@ -3,14 +3,17 @@ const L = require('./_lib');
 exports.handler = async ev => {
   if (!L.isAdmin(ev)) return L.bad('Accès refusé', 401);
   try {
+    await L.ensureSite();
     if (ev.httpMethod === 'GET') {
-      const [bk, rq, wh, cat] = await Promise.all([
+      const [bk, rq, wh, cat, gal, rev] = await Promise.all([
         L.q("SELECT id, status, starts_at, ends_at, duration_min, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, created_at FROM bookings WHERE starts_at > now() - interval '7 days' AND status IN ('held','confirmed','completed','cancelled') ORDER BY starts_at"),
         L.q("SELECT id, status, client_name, contact_email, contact_phone, description, answers, ai_suggestion, desired_location, desired_starts_at, admin_price_cents, admin_duration_min, admin_message, answered_at, created_at FROM requests WHERE created_at > now() - interval '60 days' ORDER BY created_at DESC"),
         L.q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY weekday, starts_at'),
         L.catalog(),
+        L.q('SELECT id, title, category, description, created_at FROM site_gallery ORDER BY sort_order, created_at DESC'),
+        L.q('SELECT id, author, rating, comment, admin_reply, status, source, created_at FROM site_reviews ORDER BY created_at DESC'),
       ]);
-      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, service: s.name, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen }))) });
+      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, service: s.name, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen }))) });
     }
     const b = JSON.parse(ev.body || '{}');
     if (b.action === 'cancel') {
@@ -48,6 +51,24 @@ exports.handler = async ev => {
       return L.json(200, { ok: true });
     }
     if (b.action === 'timeoff') { await L.q('INSERT INTO time_off (during, reason) VALUES (tstzrange($1,$2), $3)', [L.parisDate(b.date, '00:00'), L.parisDate(b.date, '23:59'), b.reason || null]); return L.json(200, { ok: true }); }
+    /* --- Galerie --- */
+    if (b.action === 'gallery_add') {
+      const img = L.parseImage(b.image), title = String(b.title || '').trim().slice(0, 80);
+      if (!img) return L.bad('Photo invalide ou trop lourde'); if (!title) return L.bad('Donnez un titre à la photo');
+      await L.q('INSERT INTO site_gallery (title, category, description, mime, data) VALUES ($1,$2,$3,$4,$5)', [title, String(b.category || '').trim().slice(0, 40) || null, String(b.description || '').trim().slice(0, 300) || null, img.mime, img.data]);
+      return L.json(200, { ok: true });
+    }
+    if (b.action === 'gallery_delete') { await L.q('DELETE FROM site_gallery WHERE id=$1', [b.id]); return L.json(200, { ok: true }); }
+    /* --- Avis --- */
+    if (b.action === 'review_add') {
+      const author = String(b.author || '').trim().slice(0, 60), comment = String(b.comment || '').trim().slice(0, 600), n = Math.round(+b.rating);
+      if (!author || !comment || !(n >= 1 && n <= 5)) return L.bad('Prénom, note et commentaire requis');
+      await L.q("INSERT INTO site_reviews (author, rating, comment, status, source) VALUES ($1,$2,$3,'published','admin')", [author, n, comment]);
+      return L.json(200, { ok: true });
+    }
+    if (b.action === 'review_status') { if (!['published', 'hidden'].includes(b.status)) return L.bad('Statut invalide'); await L.q('UPDATE site_reviews SET status=$2 WHERE id=$1', [b.id, b.status]); return L.json(200, { ok: true }); }
+    if (b.action === 'review_reply') { await L.q('UPDATE site_reviews SET admin_reply=$2 WHERE id=$1', [b.id, String(b.reply || '').trim().slice(0, 400) || null]); return L.json(200, { ok: true }); }
+    if (b.action === 'review_delete') { await L.q('DELETE FROM site_reviews WHERE id=$1', [b.id]); return L.json(200, { ok: true }); }
     return L.bad('Action inconnue');
   } catch (e) { console.error(e); return L.bad('Erreur administration', 500); }
 };
