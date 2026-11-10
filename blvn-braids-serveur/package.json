@@ -1,0 +1,7 @@
+{
+  "name": "blvn-braids",
+  "private": true,
+  "description": "Site de réservation Blvn Braids : site statique + serveur Netlify Functions (Supabase, Stripe, Resend)",
+  "engines": { "node": ">=20" },
+  "dependencies": { "pg": "^8.23.1" }
+}
