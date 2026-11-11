@@ -158,38 +158,6 @@ async function availability(ymd, durationMin, set) {
   return { slots, closed: false, approxDuration: durationMin == null };
 }
 
-/* Calendrier du mois pour la gérante : état de chaque jour (libre, complet, bloqué, fermé, passé) */
-async function monthCalendar(ym, set, durationMin = 180) {
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new Error('Mois invalide');
-  const [Y, M] = ym.split('-').map(Number), n = new Date(Date.UTC(Y, M, 0)).getUTCDate(), pad = x => String(x).padStart(2, '0');
-  const first = parisDate(`${ym}-01`, '00:00'), last = new Date(parisDate(`${ym}-${pad(n)}`, '23:59').getTime() + 60000);
-  await q("UPDATE bookings SET status='expired' WHERE status='held' AND hold_expires_at < now()");
-  const [hours, busy, off] = await Promise.all([
-    q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY starts_at'),
-    q("SELECT starts_at, ends_at, status FROM bookings WHERE status IN ('held','confirmed') AND ends_at > $1 AND starts_at < $2", [first, last]),
-    q('SELECT lower(during) AS a, upper(during) AS b FROM time_off WHERE during && tstzrange($1,$2)', [first, last]),
-  ]);
-  const m = set.margins, now = Date.now(), minStart = now + m.min_notice_hours * 3600000, need = durationMin + m.buffer_min;
-  const WDS = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }, T = x => new Date(x).getTime(), days = [];
-  for (let d = 1; d <= n; d++) {
-    const ymd = `${ym}-${pad(d)}`, ds = parisDate(ymd, '00:00').getTime(), de = parisDate(ymd, '23:59').getTime() + 60000;
-    const WD = WDS[new Intl.DateTimeFormat('en-GB', { timeZone: TZ, weekday: 'short' }).format(new Date(ds + 43200000))];
-    const hs = hours.rows.filter(h => h.weekday === WD);
-    const booked = busy.rows.filter(b => b.status === 'confirmed' && T(b.starts_at) < de && T(b.ends_at) > ds).length;
-    let status, free = 0;
-    if (de <= now) status = 'past';
-    else if (!hs.length) status = 'closed';
-    else if (off.rows.some(o => T(o.a) < de && T(o.b) > ds)) status = 'blocked';
-    else {
-      for (const h of hs) { const open = parisDate(ymd, h.starts_at.slice(0, 5)).getTime(), close = parisDate(ymd, h.ends_at.slice(0, 5)).getTime();
-        for (let t = open; t + durationMin * 60000 <= close; t += m.slot_step_min * 60000) if (t >= minStart && !busy.rows.some(b => T(b.starts_at) < t + need * 60000 && T(b.ends_at) > t)) free++; }
-      status = free ? 'free' : 'full';
-    }
-    days.push({ date: ymd, weekday: WD, status, free, booked });
-  }
-  return { month: ym, days };
-}
-
 /* ---------- Stripe (API REST, sans dépendance) ---------- */
 async function stripe(path, params, method = 'POST') {
   if (ENV.dryRun) return { id: 'cs_test_dryrun_' + crypto.randomBytes(6).toString('hex'), url: ENV.site + '/?paid=cs_test_dryrun', payment_status: 'paid', payment_intent: 'pi_dryrun', metadata: params ? Object.fromEntries(Object.entries(params).filter(([k]) => k.startsWith('metadata[')).map(([k, v]) => [k.slice(9, -1), v])) : {} };
@@ -230,8 +198,8 @@ async function mailBookingConfirmed(b) {
   const rows = bookingRows(b), sn = b.snapshot || {};
   const details = (sn.summary || []).length ? `<p style="margin:16px 0 6px;color:#555">Vos choix</p><ul style="margin:0;padding-left:18px">${sn.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
   await sendMail({ to: b.contact_email, subject: `Rendez-vous confirmé · ${fmtWhen(new Date(b.starts_at))}`,
-    html: layout('Votre rendez-vous est confirmé', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Merci pour votre réservation. Voici le récapitulatif :</p>${rowsHtml(rows)}${details}<p style="margin-top:18px">Merci de venir avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</p><p>Vous recevrez un rappel la veille et 2 h avant.</p><div style="margin:22px 0;padding:18px 20px;border:1.5px solid #1A1A1A;border-radius:18px"><p style="margin:0 0 8px"><b>Une dernière petite étape</b></p><p style="margin:0 0 14px">Laissez-nous un message sur Instagram avec votre <b>prénom</b> et la <b>date</b> de votre rendez-vous. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse et les infos pratiques. Petit rappel aussi la veille.</p><a href="https://ig.me/m/blvn_braids" style="display:inline-block;background:#1A1A1A;color:#FAFAFA;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:bold">Écrire sur Instagram</a><p style="margin:10px 0 0;font-size:13px;color:#555">Conseillé, pas obligatoire : votre rendez-vous est déjà confirmé.</p></div><p>Pour toute question, répondez simplement à cet e-mail.</p><p>À très vite,<br>Blvn Braids</p>`),
-    text: `Rendez-vous confirmé\n${rows.map(r => r.join(' : ')).join('\n')}\n${(sn.summary || []).join('\n')}\n\nUne dernière petite étape : laissez-nous un message sur Instagram (@blvn_braids, https://ig.me/m/blvn_braids) avec votre prénom et la date de votre rendez-vous. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse.` });
+    html: layout('Votre rendez-vous est confirmé', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Merci pour votre réservation. Voici le récapitulatif :</p>${rowsHtml(rows)}${details}<p style="margin-top:18px">Merci de venir avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</p><p>Vous recevrez un rappel la veille et 2 h avant. Pour toute question, répondez simplement à cet e-mail.</p><p>À très vite,<br>Blvn Braids</p>`),
+    text: `Rendez-vous confirmé\n${rows.map(r => r.join(' : ')).join('\n')}\n${(sn.summary || []).join('\n')}` });
   if (ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: `Nouvelle réservation · ${b.client_name} · ${fmtWhen(new Date(b.starts_at))}`,
     html: layout('Nouvelle réservation payée', rowsHtml([...rows, ['Cliente', b.client_name], ['E-mail', b.contact_email], ['Téléphone', b.contact_phone], ...(b.client_note ? [['Mot de la cliente', b.client_note]] : [])]) + ((sn.summary || []).length ? `<ul>${sn.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')),
     text: `Nouvelle réservation\n${rows.map(r => r.join(' : ')).join('\n')}\nCliente : ${b.client_name} ${b.contact_email} ${b.contact_phone}` });
@@ -270,4 +238,4 @@ const parseImage = dataUrl => { const m = /^data:(image\/(?:jpeg|png|webp));base
 
 const isAdmin = ev => ENV.adminToken && (ev.headers['x-admin-token'] === ENV.adminToken || ev.headers['X-Admin-Token'] === ENV.adminToken);
 
-module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar };
+module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage };

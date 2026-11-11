@@ -5,8 +5,6 @@ exports.handler = async ev => {
   try {
     await L.ensureSite();
     if (ev.httpMethod === 'GET') {
-      const qm = (ev.queryStringParameters || {}).month;
-      if (qm) { try { return L.json(200, await L.monthCalendar(qm, await L.settings())); } catch (e) { if (/Mois/.test(e.message)) return L.bad('Mois invalide'); throw e; } }
       const [bk, rq, wh, cat, gal, rev] = await Promise.all([
         L.q("SELECT id, status, starts_at, ends_at, duration_min, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, created_at FROM bookings WHERE starts_at > now() - interval '7 days' AND status IN ('held','confirmed','completed','cancelled') ORDER BY starts_at"),
         L.q("SELECT id, status, client_name, contact_email, contact_phone, description, answers, ai_suggestion, desired_location, desired_starts_at, admin_price_cents, admin_duration_min, admin_message, answered_at, created_at FROM requests WHERE created_at > now() - interval '60 days' ORDER BY created_at DESC"),
@@ -52,7 +50,6 @@ exports.handler = async ev => {
       for (const h of b.hours || []) if (h.weekday >= 1 && h.weekday <= 7 && /^\d\d:\d\d$/.test(h.starts) && /^\d\d:\d\d$/.test(h.ends) && h.ends > h.starts) await L.q('INSERT INTO working_hours (weekday, starts_at, ends_at) VALUES ($1,$2,$3)', [h.weekday, h.starts, h.ends]);
       return L.json(200, { ok: true });
     }
-    if (b.action === 'timeoff_remove') { if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '')) return L.bad('Date invalide'); await L.q('DELETE FROM time_off WHERE during && tstzrange($1,$2)', [L.parisDate(b.date, '00:00'), L.parisDate(b.date, '23:59')]); return L.json(200, { ok: true }); }
     if (b.action === 'timeoff') { await L.q('INSERT INTO time_off (during, reason) VALUES (tstzrange($1,$2), $3)', [L.parisDate(b.date, '00:00'), L.parisDate(b.date, '23:59'), b.reason || null]); return L.json(200, { ok: true }); }
     /* --- Galerie --- */
     if (b.action === 'gallery_add') {

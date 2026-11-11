@@ -745,7 +745,7 @@ function book(){
   if(S.step===4){
     const days=[...Array(SITE_MODE?21:10)].map((_,i)=>{const d=new Date();d.setDate(d.getDate()+i+1);return d});
     const w=S.waitFor;
-    body=`<h2>Date et heure</h2><p class="muted">Durée de la prestation : ${v&&v.d?dur(v.d):'à confirmer par la coiffeuse'}.</p><div class="days" role="group" aria-label="Jours">${(()=>{const dm=SITE_MODE?ensureDays(days[0].toISOString().slice(0,10),days.length,v&&v.d!=null?v.d:null):null;return days.map(d=>{const k=d.toISOString().slice(0,10),off=!!(dm&&dm[k]===false);return `<button class="day" aria-pressed="${!off&&b.date===k}" ${off?'disabled aria-label="'+d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})+' : complet" style="opacity:.42;cursor:not-allowed;background:transparent;border-style:dashed"':`data-act="date" data-d="${k}"`}>${d.toLocaleDateString('fr-FR',{weekday:'short'})}<b ${off?'style="text-decoration:line-through"':''}>${d.getDate()}</b>${off?'complet':d.toLocaleDateString('fr-FR',{month:'short'})}</button>`}).join('')})()}</div>${SITE_MODE?'<p class="muted" style="margin:4px 0 0;font-size:13px">Les jours barrés sont complets ou fermés.</p>':''}
+    body=`<h2>Date et heure</h2><p class="muted">Durée de la prestation : ${v&&v.d?dur(v.d):'à confirmer par la coiffeuse'}.</p><div class="days" role="group" aria-label="Jours">${days.map(d=>{const k=d.toISOString().slice(0,10);return `<button class="day" aria-pressed="${b.date===k}" data-act="date" data-d="${k}">${d.toLocaleDateString('fr-FR',{weekday:'short'})}<b>${d.getDate()}</b>${d.toLocaleDateString('fr-FR',{month:'short'})}</button>`}).join('')}</div>
     ${b.date?(SITE_MODE?liveSlotsHtml(b,v):`<div class="slots">${SLOTS.map(t=>{const full=isTaken(b.date,t);const on=w&&w.date===b.date&&w.slot===t;return `<button class="slot ${full?'full':''}" aria-pressed="${full?on:b.slot===t}" data-act="${full?'wopen':'slot'}" data-t="${t}">${t}${full?'<small>Complet</small>':''}</button>`}).join('')}</div>
     <p class="muted" style="margin-top:10px">Créneau complet ? Touchez-le pour rejoindre la liste d’attente.</p>`):'<p class="muted">Choisissez un jour pour voir les créneaux disponibles.</p>'}
     ${w&&b.date===w.date?waitPanel(w):''}`;
@@ -754,13 +754,12 @@ function book(){
     body=`<h2>Vos coordonnées</h2><div class="card"><p class="muted">Nous les utilisons pour confirmer votre rendez-vous et vous envoyer un rappel par e-mail et par SMS 24 h et 2 h avant la prestation.</p>
       <label class="fl" for="c-name">Prénom et nom</label><input id="c-name" type="text" autocomplete="name" value="${esc(b.name)}" data-field="name">
       <label class="fl" for="c-email">E-mail</label><input id="c-email" type="email" autocomplete="email" inputmode="email" value="${esc(b.email)}" data-field="email" placeholder="prenom@exemple.fr">
-      <label class="fl" for="c-phone">Téléphone</label><input id="c-phone" type="tel" autocomplete="tel" inputmode="tel" value="${esc(b.phone)}" data-field="phone" placeholder="06 12 34 56 78">
-      <p class="hint" style="margin-top:10px">Vérifiez bien votre e-mail et votre numéro : c’est là que vous recevrez votre confirmation et que la coiffeuse vous contactera.</p></div>`;
+      <label class="fl" for="c-phone">Téléphone</label><input id="c-phone" type="tel" autocomplete="tel" inputmode="tel" value="${esc(b.phone)}" data-field="phone" placeholder="06 12 34 56 78"></div>`;
   }
   if(S.step===6){
     body=`<h2>Avant de confirmer</h2><div class="card">
       <label class="opt"><input type="checkbox" ${b.rules?'checked':''} data-act="rules"><span>Merci de vous présenter avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</span></label>
-      <label class="opt"><input type="checkbox" ${b.cancel?'checked':''} data-act="cancel"><span>J’ai lu et j’accepte la politique d’annulation : l’acompte n’est pas remboursé en cas d’annulation moins de 24 h avant le rendez-vous.</span></label></div>`;
+      <label class="opt"><input type="checkbox" ${b.cancel?'checked':''} data-act="cancel"><span>J’ai lu et j’accepte la politique d’annulation : l’acompte n’est pas remboursé en cas d’annulation moins de 48 h avant le rendez-vous.</span></label></div>`;
   }
   if(S.step===7){
     const p=pricing(), pend=p.pending;
@@ -797,8 +796,7 @@ function confirmation(){
     <div class="sum"><span>Acompte payé</span><b>${eur(d.deposit)}</b></div>
     <div class="sum"><span>Reste à régler le jour J</span><b>${eur(d.balance)}</b></div></div>
   <p class="muted">Une confirmation vient d’être envoyée à ${esc(d.email)}. Vous recevrez un rappel la veille et 2 h avant. Cheveux impérativement propres, démêlage non obligatoire.</p>
-  <div class="card" style="text-align:center;margin-top:14px"><h4 style="margin:0 0 6px">Une dernière petite étape</h4><p style="margin:0 0 12px">Laissez-nous un message sur Instagram avec votre <b>prénom</b> et la <b>date</b> de votre rendez-vous. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse et les infos pratiques. Petit rappel aussi la veille.</p><a class="btn" style="text-decoration:none" href="https://ig.me/m/${esc(CFG.contact.insta)}" target="_blank" rel="noopener">Écrire sur Instagram</a><p class="muted" style="margin:8px 0 0;font-size:13px">Conseillé, pas obligatoire : votre rendez-vous est déjà confirmé.</p></div>
-  <button class="btn ghost" data-act="reset" style="margin-top:14px">Retour à l’accueil</button>`;
+  <button class="btn" data-act="reset">Retour à l’accueil</button>`;
   if(d.kind==='request') return `<div class="okmark" role="img" aria-label="Demande envoyée"><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15 27l8 8 14-16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
   <h2 style="text-align:center">Demande envoyée</h2><div class="card">
     <div class="sum"><span>Coiffure</span><b style="text-align:right">${esc(d.svc)}</b></div>
@@ -1622,14 +1620,6 @@ async function loadSite(){
   render();
 }
 const flash=m=>{const t=document.createElement('div');t.className='toast';t.setAttribute('role','status');t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),2800)};
-/* Vue d’ensemble des jours : possible ou non (sans aucun chiffre) */
-function ensureDays(from, n, duration) {
-  const key = from + '|' + n + '|' + (duration || ''); LIVE.days = LIVE.days || {}; LIVE.daysLoading = LIVE.daysLoading || {};
-  if (LIVE.days[key] || LIVE.daysLoading[key]) return LIVE.days[key] || null;
-  LIVE.daysLoading[key] = true;
-  fetch(API('availability') + '?from=' + from + '&days=' + n + '&duration=' + (duration || '')).then(r => r.json()).then(j => { LIVE.days[key] = Object.fromEntries((j.days || []).map(x => [x.date, x.open])); }).catch(() => { LIVE.days[key] = {}; }).finally(() => { delete LIVE.daysLoading[key]; render(); });
-  return null;
-}
 /* Créneaux du jour choisi */
 function ensureSlots(date, duration) {
   const key = date + '|' + (duration || '');
@@ -1657,7 +1647,7 @@ async function liveSubmit() {
   try {
     const r = await fetch(API('book'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
     const j = await r.json();
-    if (!r.ok) { S.toast = j.error || 'Réservation impossible'; if (r.status === 409) { b.slot = null; S.step = 4; LIVE.av = {}; LIVE.days = {}; } }
+    if (!r.ok) { S.toast = j.error || 'Réservation impossible'; if (r.status === 409) { b.slot = null; S.step = 4; LIVE.av = {}; } }
     else if (j.kind === 'pay') { sessionStorage.setItem('blvn-pending', JSON.stringify({ label: `${s.name} · ${v.l}`, email: b.email.trim() })); location.href = j.url; return; }
     else if (j.kind === 'request') { S.done = { kind: 'request', svc: j.label, when: j.when, email: j.email }; S.b = freshB(); S.step = 1; }
     else if (j.kind === 'paid') { S.toast = 'Cette réservation est déjà confirmée.'; S.b = freshB(); S.step = 1; }
@@ -1691,73 +1681,7 @@ async function liveAdminLoad() {
 async function liveAdminPost(body, okMsg) {
   try { const r = await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify(body) }); const j = await r.json(); S.toast = r.ok ? okMsg : (j.error || 'Erreur'); }
   catch (e) { S.toast = 'Connexion impossible'; }
-  await liveAdminLoad(); loadSite(); loadCatalog(); if (LIVE.cal) loadCal(LIVE.cal.ym);
-}
-/* ---------- Calendrier des disponibilités (gestion) et image pour les stories ---------- */
-const ymNow = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
-const ymShift = (ym, k) => { const [y, m] = ym.split('-').map(Number), d = new Date(y, m - 1 + k, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
-const ymLabel = ym => { const [y, m] = ym.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }); };
-async function loadCal(ym) {
-  LIVE.cal = { ym, days: (LIVE.cal && LIVE.cal.ym === ym && LIVE.cal.days) || null, sel: LIVE.cal && LIVE.cal.ym === ym ? LIVE.cal.sel : null, img: null, loading: true }; render();
-  try { const r = await fetch(API('admin') + '?month=' + ym, { headers: hdrs() }); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Erreur');
-    LIVE.cal.days = j.days; LIVE.cal.err = ''; try { LIVE.cal.img = (await drawStory(LIVE.cal)).toDataURL('image/png'); } catch (e) {} }
-  catch (e) { LIVE.cal.err = 'Calendrier indisponible. Réessayez.'; }
-  LIVE.cal.loading = false; render();
-}
-/* Image 1080 × 1920 (format story) : seuls les jours disponibles ou non sont montrés, jamais le nom des clientes */
-async function drawStory(cal) {
-  const W = 1080, H = 1920, CORAL = '#FF5A5F', INK = '#1A1A1A', PAPER = '#FAFAFA';
-  try { await Promise.all([document.fonts.load('400 150px "Mrs Saint Delafield"'), document.fonts.load('400 64px "Bodoni Moda"'), document.fonts.load('italic 400 44px "Bodoni Moda"'), document.fonts.load('500 30px "Jost"'), document.fonts.load('400 30px "Jost"')]); } catch (e) {}
-  const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
-  const sp = v => { try { x.letterSpacing = v; } catch (e) {} };
-  x.fillStyle = CORAL; x.fillRect(0, 0, W, H);
-  x.textAlign = 'center'; x.textBaseline = 'alphabetic'; x.fillStyle = INK;
-  sp('0px'); x.font = '400 170px "Mrs Saint Delafield", cursive'; x.fillText('Blvn Braids', W / 2, 300);
-  sp('14px'); x.font = '400 30px "Jost", sans-serif'; x.fillText('HAIRSTYLIST', W / 2 + 7, 352);
-  const weeks = Math.ceil((((cal.days[0].weekday || 1) - 1) + cal.days.length) / 7), CELL = 124, GX = (W - 7 * CELL) / 2, GY = 720;
-  const cardY = 430, cardH = (GY - cardY) + weeks * CELL + 150;
-  x.beginPath(); const R = 56, cx0 = 60, cw = W - 120; x.moveTo(cx0 + R, cardY); x.arcTo(cx0 + cw, cardY, cx0 + cw, cardY + cardH, R); x.arcTo(cx0 + cw, cardY + cardH, cx0, cardY + cardH, R); x.arcTo(cx0, cardY + cardH, cx0, cardY, R); x.arcTo(cx0, cardY, cx0 + cw, cardY, R); x.closePath();
-  x.fillStyle = PAPER; x.fill(); x.lineWidth = 4; x.strokeStyle = INK; x.stroke();
-  x.fillStyle = INK; sp('0px'); x.font = '400 70px "Bodoni Moda", serif'; x.fillText('Disponibilités', W / 2, cardY + 110);
-  x.font = 'italic 400 46px "Bodoni Moda", serif'; x.fillText(ymLabel(cal.ym), W / 2, cardY + 176);
-  x.font = '500 28px "Jost", sans-serif'; x.globalAlpha = .6; ['L', 'M', 'M', 'J', 'V', 'S', 'D'].forEach((l, i) => x.fillText(l, GX + i * CELL + CELL / 2, GY - 26)); x.globalAlpha = 1;
-  cal.days.forEach((d, i) => { const k = (cal.days[0].weekday - 1) + i, px = GX + (k % 7) * CELL + CELL / 2, py = GY + Math.floor(k / 7) * CELL + CELL / 2, n = String(+d.date.slice(8));
-    x.font = '500 42px "Jost", sans-serif';
-    if (d.status === 'free') { x.beginPath(); x.arc(px, py, 48, 0, Math.PI * 2); x.fillStyle = INK; x.fill(); x.fillStyle = PAPER; x.fillText(n, px, py + 15); }
-    else { x.fillStyle = INK; x.globalAlpha = d.status === 'past' ? .16 : .34; x.fillText(n, px, py + 15);
-      if (d.status !== 'past') { x.lineWidth = 3; x.strokeStyle = INK; x.beginPath(); x.moveTo(px - 26, py + 22); x.lineTo(px + 26, py - 22); x.stroke(); } x.globalAlpha = 1; } });
-  const LY = GY + weeks * CELL + 62; x.font = '400 30px "Jost", sans-serif'; x.textAlign = 'left';
-  x.beginPath(); x.arc(GX + 40, LY - 10, 20, 0, Math.PI * 2); x.fillStyle = INK; x.fill(); x.fillText('Disponible', GX + 76, LY);
-  x.globalAlpha = .34; x.font = '500 34px "Jost", sans-serif'; x.fillText('12', GX + 470, LY + 2); x.lineWidth = 3; x.beginPath(); x.moveTo(GX + 466, LY + 6); x.lineTo(GX + 512, LY - 28); x.stroke(); x.globalAlpha = 1;
-  x.font = '400 30px "Jost", sans-serif'; x.fillText('Complet ou fermé', GX + 530, LY);
-  const BY = cardY + cardH; x.textAlign = 'center';
-  x.font = '400 36px "Jost", sans-serif'; x.fillText('Réservez votre créneau sur', W / 2, BY + 110);
-  x.font = '400 78px "Bodoni Moda", serif'; x.fillText('blvnbraids.com', W / 2, BY + 205);
-  sp('8px'); x.font = '400 32px "Jost", sans-serif'; x.fillText('@blvn_braids', W / 2 + 4, BY + 272); sp('0px');
-  return c;
-}
-async function saveStory() {
-  const cal = LIVE.cal; if (!cal || !cal.days) return;
-  const cv = await drawStory(cal), name = 'disponibilites-' + cal.ym + '.png';
-  cv.toBlob(async b => { if (!b) { flash('Image indisponible'); return; }
-    try { const f = new File([b], name, { type: 'image/png' }); if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f] }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
-    const u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); flash('Image téléchargée'); }, 'image/png');
-}
-function calTab() {
-  const cal = LIVE.cal; if (!cal) { setTimeout(() => loadCal(ymNow()), 0); return '<p class="muted" role="status">Chargement du calendrier…</p>'; }
-  const ST = { free: 'Disponible', full: 'Complet', blocked: 'Bloqué par vous', closed: 'Fermé', past: 'Passé' };
-  const sty = { free: 'background:var(--ink);color:var(--paper);border-color:var(--ink)', full: 'background:var(--coral);border-color:var(--ink)', blocked: 'background:repeating-linear-gradient(45deg,var(--paper),var(--paper) 5px,rgba(26,26,26,.18) 5px,rgba(26,26,26,.18) 7px);border-style:dashed', closed: 'opacity:.45;border-style:dotted', past: 'opacity:.25;border-color:transparent' };
-  const days = cal.days || [], lead = days.length ? days[0].weekday - 1 : 0, sel = days.find(d => d.date === cal.sel);
-  const grid = days.length ? `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:10px">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(l => `<span class="muted" style="text-align:center;font-size:12px">${l}</span>`).join('')}${'<span></span>'.repeat(lead)}${days.map(d => `<button data-act="la_calday" data-d="${d.date}" aria-pressed="${cal.sel === d.date}" aria-label="${+d.date.slice(8)} : ${ST[d.status]}" style="aspect-ratio:1;border:1.5px solid var(--ink);border-radius:12px;font:inherit;font-size:15px;color:var(--ink);background:var(--paper);cursor:pointer;padding:0;position:relative;${sty[d.status]};${cal.sel === d.date ? 'outline:3px solid var(--ink);outline-offset:2px' : ''}">${+d.date.slice(8)}${d.booked ? `<span style="position:absolute;right:3px;bottom:1px;font-size:10px">${d.booked}</span>` : ''}</button>`).join('')}</div>` : '';
-  const legend = `<div class="chips" style="margin-top:12px;font-size:12px">${Object.entries(ST).filter(([k]) => k !== 'past').map(([k, l]) => `<span style="display:inline-flex;align-items:center;gap:6px"><i style="width:16px;height:16px;border-radius:5px;border:1.5px solid var(--ink);display:inline-block;${sty[k]}"></i>${l}</span>`).join('')}</div><p class="hint">Le petit chiffre indique le nombre de rendez-vous confirmés ce jour-là.</p>`;
-  const panel = sel ? `<div class="card"><h4>${new Date(sel.date + 'T12:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</h4><p class="muted" style="margin:0 0 10px">${ST[sel.status]}${sel.booked ? ` · ${sel.booked} rendez-vous confirmé${sel.booked > 1 ? 's' : ''}` : ''}${sel.status === 'free' ? ` · ${sel.free} créneau${sel.free > 1 ? 'x' : ''} de départ libre${sel.free > 1 ? 's' : ''}` : ''}</p>
-      ${sel.status === 'blocked' ? `<button class="btn" data-act="la_calunblock" data-d="${sel.date}">Débloquer cette journée</button>` : (sel.status === 'free' || sel.status === 'full') ? `<button class="btn ghost" data-act="la_calblock" data-d="${sel.date}">Bloquer cette journée</button>${sel.booked ? '<p class="hint">Les rendez-vous déjà confirmés ne sont pas annulés : seules les nouvelles réservations sont empêchées.</p>' : ''}` : sel.status === 'closed' ? '<p class="hint">Jour fermé dans vos horaires. Pour l’ouvrir, modifiez l’onglet Horaires.</p>' : ''}</div>` : '<p class="muted" style="margin-top:12px">Touchez un jour pour le bloquer ou le débloquer.</p>';
-  return `<div class="card"><div class="row"><button class="btn small ghost" data-act="la_calnav" data-k="-1" aria-label="Mois précédent">‹</button><b style="text-transform:capitalize">${ymLabel(cal.ym)}</b><button class="btn small ghost" data-act="la_calnav" data-k="1" aria-label="Mois suivant">›</button></div>
-    ${cal.err ? `<p class="err">${esc(cal.err)}</p>` : ''}${cal.loading && !days.length ? '<p class="muted" role="status">Chargement…</p>' : ''}${grid}${days.length ? legend : ''}</div>${days.length ? panel : ''}
-    ${days.length ? `<h3>Image pour vos stories</h3><div class="card"><p class="muted">Vos disponibilités du mois, au format story (1080 × 1920). L’image se met à jour à chaque réservation ou jour bloqué : téléchargez-la de nouveau pour la republier. Aucun nom de cliente n’y figure.</p>
-      ${cal.img ? `<img src="${cal.img}" alt="Aperçu de l’image des disponibilités de ${esc(ymLabel(cal.ym))}" style="width:min(100%,260px);display:block;margin:10px auto;border-radius:16px;border:1.5px solid var(--ink)">` : ''}
-      <button class="btn" data-act="la_calsave">Télécharger l’image</button><button class="btn ghost" style="margin-top:10px" data-act="la_calrefresh">Actualiser</button>
-      <p class="hint">Sur téléphone, le bouton ouvre le partage : choisissez « Enregistrer l’image » ou directement Instagram.</p></div>` : ''}`;
+  await liveAdminLoad(); loadSite(); loadCatalog();
 }
 const WD = ['', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 function liveAdmin() {
@@ -1765,7 +1689,7 @@ function liveAdmin() {
   if (!LIVE.data && !LIVE.adminLoading) setTimeout(liveAdminLoad, 0);
   const d = LIVE.data; if (!d) return `<h2>Administration</h2><p class="muted" role="status">${LIVE.adminLoading ? 'Chargement…' : (LIVE.msg || '')}</p>`;
   const todo = d.requests.filter(r => r.status === 'price_or_duration_missing' || r.status === 'to_verify');
-  const tabs = [['todo', 'À traiter' + (todo.length ? ` <span class="badge">${todo.length}</span>` : '')], ['plan', 'Planning'], ['cal', 'Calendrier'], ['models', 'Modèles'], ['hours', 'Horaires'], ['content', 'Galerie et avis' + ((d.reviews || []).some(r => r.status === 'pending') ? ` <span class="badge">${d.reviews.filter(r => r.status === 'pending').length}</span>` : '')]];
+  const tabs = [['todo', 'À traiter' + (todo.length ? ` <span class="badge">${todo.length}</span>` : '')], ['plan', 'Planning'], ['models', 'Modèles'], ['hours', 'Horaires'], ['content', 'Galerie et avis' + ((d.reviews || []).some(r => r.status === 'pending') ? ` <span class="badge">${d.reviews.filter(r => r.status === 'pending').length}</span>` : '')]];
   let body = '';
   if (LIVE.tab === 'todo') body = todo.length ? todo.map(r => { const a = r.answers || {}; return `<div class="card"><div class="row" style="align-items:flex-start"><div style="min-width:0"><b>${esc(r.client_name || '')}</b><br><span class="muted">${esc(r.contact_email)} · ${esc(r.contact_phone)}</span></div><span class="badge">À valider</span></div>
       ${a.photo ? `<img class="preview" src="${a.photo}" alt="Photo d’inspiration">` : ''}${r.ai_suggestion && (r.ai_suggestion.style || r.ai_suggestion.label) ? `<p class="muted" style="margin:8px 0 0">Piste de l’IA (visible par vous seulement) : ${esc([r.ai_suggestion.style, r.ai_suggestion.label].filter(Boolean).join(' · '))}</p>` : ''}
@@ -1776,7 +1700,6 @@ function liveAdmin() {
   if (LIVE.tab === 'plan') body = `<p class="muted">Rendez-vous des 7 derniers jours et à venir. Un rendez-vous confirmé occupe son créneau ; l’annuler le libère et prévient la cliente par e-mail.</p>` + (d.bookings.length ? d.bookings.map(b => { const sn = b.snapshot || {}; const st = { held: 'Paiement en cours', confirmed: 'Confirmé', completed: 'Terminé', cancelled: 'Annulé', expired: 'Expiré' }[b.status] || b.status;
       return `<div class="card"><div class="row" style="align-items:flex-start"><div style="min-width:0"><b>${esc(b.client_name || '')}</b><br><span class="muted">${esc(sn.label || '')}<br>${esc(b.when)} · ${dur(b.duration_min)}<br>${esc(b.contact_email)} · ${esc(b.contact_phone)}</span>${(sn.summary || []).length ? `<ul class="dlist">${sn.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${b.client_note ? `<br><span class="muted">« ${esc(b.client_note)} »</span>` : ''}${b.at_home ? `<br><span class="muted">À domicile : ${esc((b.intervention_address || {}).text || '')}</span>` : ''}<br><span class="muted">Total ${eur(c2e(b.total_cents))} · acompte ${eur(c2e(b.deposit_cents))} · reste ${eur(c2e(b.balance_cents))}</span></div><span class="badge ${b.status === 'confirmed' ? 'ok' : ''}">${st}</span></div>
       ${b.status === 'confirmed' ? `<div class="row" style="margin-top:10px"><button class="btn small ghost" data-act="la_cancel" data-id="${b.id}">${S.delArm === 'la:' + b.id ? 'Confirmer l’annulation' : 'Annuler'}</button><button class="btn small ghost" data-act="la_complete" data-id="${b.id}">Marquer terminé</button></div>` : ''}</div>`; }).join('') : '<div class="card"><p class="muted" style="margin:0">Aucun rendez-vous pour l’instant.</p></div>');
-  if (LIVE.tab === 'cal') body = calTab();
   if (LIVE.tab === 'models') { const VS = d.variants || [], SV = d.services || [], CT = d.categories || [];
     const miss = VS.filter(v => !v.hidden && v.duration == null && v.price != null).length;
     const sizeOpts = cur => `<option value="">Grosseur comprise…</option>${SIZES.map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`;
@@ -1828,14 +1751,14 @@ function liveAdmin() {
         <input id="la-rr-${r.id}" type="text" maxlength="400" placeholder="Votre réponse publique (facultatif)" value="${esc(r.admin_reply || '')}">
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px;justify-content:flex-start">${r.status !== 'published' ? `<button class="btn small" data-act="la_rstatus" data-id="${r.id}" data-s="published">Publier</button>` : `<button class="btn small ghost" data-act="la_rstatus" data-id="${r.id}" data-s="hidden">Masquer</button>`}<button class="btn small ghost" data-act="la_rreply" data-id="${r.id}">Enregistrer la réponse</button><button class="btn small ghost" data-act="la_rdel" data-id="${r.id}">${S.delArm === 'lr:' + r.id ? 'Confirmer la suppression' : 'Supprimer'}</button></div></div>`).join('') : '<p class="muted">Aucun avis pour l’instant.</p>'}`; }
   return `<h2>Administration</h2><div class="row" style="gap:8px;margin-bottom:6px"><button class="btn ghost small" style="flex:1" data-act="pvstart">Prévisualiser comme cliente</button><button class="btn ghost small" data-act="la_refresh" aria-label="Actualiser">↻</button><button class="btn ghost small" data-act="la_logout">Déconnexion</button></div>
-  <div class="seg" role="tablist" aria-label="Sections" style="flex-wrap:wrap;border-radius:24px">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${LIVE.tab === k}" aria-current="${LIVE.tab === k}" data-act="la_tab" data-k="${k}" style="flex:1 1 30%">${l}</button>`).join('')}</div>${body}`;
+  <div class="seg" role="tablist" aria-label="Sections">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${LIVE.tab === k}" data-act="la_tab" data-k="${k}">${l}</button>`).join('')}</div>${body}`;
 }
 const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
 Object.assign(ACT, {
   la_login() { const p = val('la-pwd'); if (!p) return 'stop'; LIVE.token = p; try { localStorage.setItem(ADMIN_TOKEN_KEY, p); } catch (e) {} LIVE.msg = ''; liveAdminLoad(); return 'keep'; },
   la_logout() { LIVE.token = null; LIVE.data = null; try { localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (e) {} S.view = 'home'; return 'keep'; },
   la_refresh() { liveAdminLoad(); return 'keep'; },
-  la_tab(el) { LIVE.tab = el.dataset.k; S.delArm = ''; if (LIVE.tab === 'cal' && LIVE.cal && !LIVE.cal.loading) { loadCal(LIVE.cal.ym); return 'stop'; } return 'keep'; },
+  la_tab(el) { LIVE.tab = el.dataset.k; S.delArm = ''; return 'keep'; },
   la_answer(el) { const id = el.dataset.id, price = val('la-p-' + id), duration = val('la-d-' + id); if (!(+price >= 0) || price === '' || !(+duration > 0)) { S.toast = 'Indiquez le tarif et la durée'; return 'keep'; } liveAdminPost({ action: 'answer', id, price, duration, message: val('la-m-' + id) }, 'Tarif envoyé à la cliente'); return 'stop'; },
   la_close(el) { liveAdminPost({ action: 'close', id: el.dataset.id }, 'Demande close'); return 'stop'; },
   la_cancel(el) { const k = 'la:' + el.dataset.id; if (S.delArm !== k) { S.delArm = k; return 'keep'; } S.delArm = ''; liveAdminPost({ action: 'cancel', id: el.dataset.id }, 'Rendez-vous annulé, cliente prévenue'); return 'stop'; },
@@ -1870,12 +1793,6 @@ Object.assign(ACT, {
   la_rstatus(el) { liveAdminPost({ action: 'review_status', id: el.dataset.id, status: el.dataset.s }, el.dataset.s === 'published' ? 'Avis publié' : 'Avis masqué'); return 'stop'; },
   la_rreply(el) { liveAdminPost({ action: 'review_reply', id: el.dataset.id, reply: val('la-rr-' + el.dataset.id) }, 'Réponse enregistrée'); return 'stop'; },
   la_rdel(el) { const k = 'lr:' + el.dataset.id; if (S.delArm !== k) { S.delArm = k; return 'keep'; } S.delArm = ''; liveAdminPost({ action: 'review_delete', id: el.dataset.id }, 'Avis supprimé'); return 'stop'; },
-  la_calnav(el) { loadCal(ymShift(LIVE.cal.ym, +el.dataset.k)); return 'stop'; },
-  la_calrefresh() { loadCal(LIVE.cal.ym); return 'stop'; },
-  la_calday(el) { LIVE.cal.sel = LIVE.cal.sel === el.dataset.d ? null : el.dataset.d; return 'keep'; },
-  la_calblock(el) { liveAdminPost({ action: 'timeoff', date: el.dataset.d }, 'Journée bloquée'); return 'stop'; },
-  la_calunblock(el) { liveAdminPost({ action: 'timeoff_remove', date: el.dataset.d }, 'Journée débloquée'); return 'stop'; },
-  la_calsave() { saveStory(); return 'stop'; },
   la_timeoff() { const d = val('la-off'); if (!d) { S.toast = 'Choisissez un jour'; return 'keep'; } liveAdminPost({ action: 'timeoff', date: d }, 'Journée bloquée'); return 'stop'; },
 });
 
