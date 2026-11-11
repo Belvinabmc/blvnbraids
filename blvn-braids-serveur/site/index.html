@@ -754,12 +754,13 @@ function book(){
     body=`<h2>Vos coordonnées</h2><div class="card"><p class="muted">Nous les utilisons pour confirmer votre rendez-vous et vous envoyer un rappel par e-mail et par SMS 24 h et 2 h avant la prestation.</p>
       <label class="fl" for="c-name">Prénom et nom</label><input id="c-name" type="text" autocomplete="name" value="${esc(b.name)}" data-field="name">
       <label class="fl" for="c-email">E-mail</label><input id="c-email" type="email" autocomplete="email" inputmode="email" value="${esc(b.email)}" data-field="email" placeholder="prenom@exemple.fr">
-      <label class="fl" for="c-phone">Téléphone</label><input id="c-phone" type="tel" autocomplete="tel" inputmode="tel" value="${esc(b.phone)}" data-field="phone" placeholder="06 12 34 56 78"></div>`;
+      <label class="fl" for="c-phone">Téléphone</label><input id="c-phone" type="tel" autocomplete="tel" inputmode="tel" value="${esc(b.phone)}" data-field="phone" placeholder="06 12 34 56 78">
+      <p class="hint" style="margin-top:10px">Vérifiez bien votre e-mail et votre numéro : c’est là que vous recevrez votre confirmation et que la coiffeuse vous contactera.</p></div>`;
   }
   if(S.step===6){
     body=`<h2>Avant de confirmer</h2><div class="card">
       <label class="opt"><input type="checkbox" ${b.rules?'checked':''} data-act="rules"><span>Merci de vous présenter avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</span></label>
-      <label class="opt"><input type="checkbox" ${b.cancel?'checked':''} data-act="cancel"><span>J’ai lu et j’accepte la politique d’annulation : l’acompte n’est pas remboursé en cas d’annulation moins de 48 h avant le rendez-vous.</span></label></div>`;
+      <label class="opt"><input type="checkbox" ${b.cancel?'checked':''} data-act="cancel"><span>J’ai lu et j’accepte la politique d’annulation : l’acompte n’est pas remboursé en cas d’annulation moins de 24 h avant le rendez-vous.</span></label></div>`;
   }
   if(S.step===7){
     const p=pricing(), pend=p.pending;
@@ -796,7 +797,8 @@ function confirmation(){
     <div class="sum"><span>Acompte payé</span><b>${eur(d.deposit)}</b></div>
     <div class="sum"><span>Reste à régler le jour J</span><b>${eur(d.balance)}</b></div></div>
   <p class="muted">Une confirmation vient d’être envoyée à ${esc(d.email)}. Vous recevrez un rappel la veille et 2 h avant. Cheveux impérativement propres, démêlage non obligatoire.</p>
-  <button class="btn" data-act="reset">Retour à l’accueil</button>`;
+  <div class="card" style="text-align:center;margin-top:14px"><h4 style="margin:0 0 6px">Une dernière petite étape</h4><p style="margin:0 0 12px">Laissez-nous un message sur Instagram avec votre <b>prénom</b> et la <b>date</b> de votre rendez-vous. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse et les infos pratiques. Petit rappel aussi la veille.</p><a class="btn" style="text-decoration:none" href="https://ig.me/m/${esc(CFG.contact.insta)}" target="_blank" rel="noopener">Écrire sur Instagram</a><p class="muted" style="margin:8px 0 0;font-size:13px">Conseillé, pas obligatoire : votre rendez-vous est déjà confirmé.</p></div>
+  <button class="btn ghost" data-act="reset" style="margin-top:14px">Retour à l’accueil</button>`;
   if(d.kind==='request') return `<div class="okmark" role="img" aria-label="Demande envoyée"><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15 27l8 8 14-16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
   <h2 style="text-align:center">Demande envoyée</h2><div class="card">
     <div class="sum"><span>Coiffure</span><b style="text-align:right">${esc(d.svc)}</b></div>
