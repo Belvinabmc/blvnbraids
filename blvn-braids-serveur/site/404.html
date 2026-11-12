@@ -1309,6 +1309,7 @@ function afterRender(changed){
    L’onglet n’apparaît que lorsque la gérante est connectée ; sans le mot de passe, le serveur refuse tout. */
 const ADMIN_ENTRY=SITE_MODE&&(/[?&]gestion\b/.test(location.search)||/^\/gestion(\.html)?\/?$/.test(location.pathname));
 try{ localStorage.removeItem('blvn-admin'); }catch(e){}
+const ADMIN_TAB=(location.search.match(/[?&]tab=(todo|plan|cal|models|codes|hours|content)\b/)||[])[1]||null;
 if(ADMIN_ENTRY){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
 const ADMIN_OK_FN=()=>!SITE_MODE||ADMIN_ENTRY||GESTION_APP||!!(typeof LIVE!=='undefined'&&LIVE.token);
 const GESTION_APP=SITE_MODE&&/\/gestion(\.html)?\/?$/.test(location.pathname);
@@ -1600,7 +1601,7 @@ const INPUT_ACTS=new Set(['cp','lenother','bundles','gqty']);
 
 /* ---------- Site en ligne : liaison avec le serveur ---------- */
 const API = p => '/api/' + p;
-const LIVE = { ready: false, av: {}, loading: {}, busy: false, token: null, data: null, err: '', tab: 'todo', msg: '' };
+const LIVE = { ready: false, av: {}, loading: {}, busy: false, token: null, data: null, err: '', tab: (typeof ADMIN_TAB !== 'undefined' && ADMIN_TAB) || 'todo', msg: '' };
 const ADMIN_TOKEN_KEY = 'blvn-admin-token';
 try { LIVE.token = localStorage.getItem(ADMIN_TOKEN_KEY) || null; } catch (e) {}
 
@@ -1847,6 +1848,36 @@ function onForm(s) {
 document.addEventListener('input', e => { const t = e.target; if (!t.dataset || !t.dataset.on) return; const o = onState(t.dataset.s); o[t.dataset.on] = t.value; LIVE.onOpen = t.dataset.s;
   if (t.dataset.on === 'group') { render(); return; } const pv = document.getElementById('on-prev-' + t.dataset.s); if (pv) pv.innerHTML = onPreview(o); }, true);
 document.addEventListener('toggle', e => { const d = e.target; if (d.dataset && d.dataset.onDet) LIVE.onOpen = d.open ? d.dataset.onDet : (LIVE.onOpen === d.dataset.onDet ? null : LIVE.onOpen); }, true);
+/* ---------- Notifications sur ce téléphone (Web Push) ---------- */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isStandalone = () => { try { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { return false; } };
+const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+async function pushState() { if (!pushSupported()) { LIVE.push = 'unsupported'; return; }
+  try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); LIVE.push = sub && Notification.permission === 'granted' ? 'on' : Notification.permission === 'denied' ? 'denied' : 'off'; } catch (e) { LIVE.push = 'off'; } render(); }
+const b64u = s => { const p = '='.repeat((4 - s.length % 4) % 4), r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
+async function pushOn() {
+  try {
+    const perm = await Notification.requestPermission(); if (perm !== 'granted') { LIVE.push = perm === 'denied' ? 'denied' : 'off'; render(); return; }
+    const reg = await navigator.serviceWorker.ready, k = await (await fetch(API('admin') + '?push=key', { headers: hdrs() })).json();
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(k.key) });
+    const r = await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'push_subscribe', sub: sub.toJSON(), label: (isIOS() ? 'iPhone' : 'Téléphone') + ' · ' + new Date().toLocaleDateString('fr-FR') }) });
+    if (!r.ok) throw new Error(); LIVE.push = 'on'; S.toast = 'Notifications activées sur ce téléphone';
+    fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'push_test' }) }).catch(() => {});
+  } catch (e) { S.toast = 'Activation impossible. Réessayez.'; }
+  render();
+}
+async function pushOff() { try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); if (sub) { await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'push_unsubscribe', endpoint: sub.endpoint }) }); await sub.unsubscribe(); } } catch (e) {} LIVE.push = 'off'; S.toast = 'Notifications désactivées sur ce téléphone'; render(); }
+function pushCard() {
+  if (LIVE.push === undefined) { LIVE.push = 'loading'; setTimeout(pushState, 0); }
+  const st = LIVE.push;
+  if (st === 'on') return `<div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:22px">🔔</span><div style="flex:1"><b>Notifications activées</b><br><small class="muted">Vous êtes prévenue à chaque demande, réservation, photo ou annulation.</small></div><button class="btn small ghost" data-act="push_test">Tester</button></div>`;
+  let txt, btn = '';
+  if (isIOS() && !isStandalone()) txt = 'Pour recevoir les alertes sur iPhone, ouvrez cet espace depuis l’appli <b>Blvn Gestion</b> installée sur votre écran d’accueil (Safari → Partager → Sur l’écran d’accueil, depuis blvnbraids.com/gestion).';
+  else if (st === 'unsupported') txt = 'Ce navigateur ne permet pas les notifications. Sur iPhone, mettez à jour iOS (16.4 ou plus) et utilisez l’appli Blvn Gestion.';
+  else if (st === 'denied') txt = 'Les notifications sont bloquées pour cette appli. Autorisez-les dans les réglages du téléphone (Réglages › Notifications › Blvn Gestion), puis revenez ici.';
+  else { txt = 'Recevez une alerte sur ce téléphone à chaque nouvelle demande, réservation payée, photo d’inspiration ou annulation.'; btn = `<button class="btn small" data-act="push_on">Activer les notifications</button>`; }
+  return `<div class="card"><h4 style="margin:0 0 6px">🔔 Notifications sur ce téléphone</h4><p style="margin:0 0 ${btn ? 10 : 0}px;font-size:14px">${txt}</p>${btn}</div>`;
+}
 const WD = ['', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 function liveAdmin() {
   if (!LIVE.token) return `<h2>Espace réservé</h2><div class="card"><h4>Connexion</h4><p class="muted">Cet espace est réservé à la gérante.</p><label class="fl" for="la-pwd">Mot de passe</label><input id="la-pwd" type="password" autocomplete="current-password">${LIVE.msg ? `<p class="err">${esc(LIVE.msg)}</p>` : ''}<button class="btn" style="margin-top:12px" data-act="la_login">Se connecter</button></div>`;
@@ -1956,7 +1987,7 @@ function liveAdmin() {
       ${R.length ? R.map(r => `<div class="card"><div class="row"><b>${esc(r.author)}</b><span class="badge ${r.status === 'published' ? 'ok' : ''}">${ST[r.status] || r.status}</span></div><span class="stars" aria-label="${r.rating} sur 5">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span><p style="margin:6px 0 10px">${esc(r.comment)}</p>
         <input id="la-rr-${r.id}" type="text" maxlength="400" placeholder="Votre réponse publique (facultatif)" value="${esc(r.admin_reply || '')}">
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px;justify-content:flex-start">${r.status !== 'published' ? `<button class="btn small" data-act="la_rstatus" data-id="${r.id}" data-s="published">Publier</button>` : `<button class="btn small ghost" data-act="la_rstatus" data-id="${r.id}" data-s="hidden">Masquer</button>`}<button class="btn small ghost" data-act="la_rreply" data-id="${r.id}">Enregistrer la réponse</button><button class="btn small ghost" data-act="la_rdel" data-id="${r.id}">${S.delArm === 'lr:' + r.id ? 'Confirmer la suppression' : 'Supprimer'}</button></div></div>`).join('') : '<p class="muted">Aucun avis pour l’instant.</p>'}`; }
-  return `<h2>Administration</h2><div class="row" style="gap:8px;margin-bottom:6px"><button class="btn ghost small" style="flex:1" data-act="pvstart">Prévisualiser comme cliente</button><button class="btn ghost small" data-act="la_refresh" aria-label="Actualiser">↻</button><button class="btn ghost small" data-act="la_logout">Déconnexion</button></div>
+  return `<h2>Administration</h2>${pushCard()}<div class="row" style="gap:8px;margin-bottom:6px"><button class="btn ghost small" style="flex:1" data-act="pvstart">Prévisualiser comme cliente</button><button class="btn ghost small" data-act="la_refresh" aria-label="Actualiser">↻</button><button class="btn ghost small" data-act="la_logout">Déconnexion</button></div>
   <div class="seg" role="tablist" aria-label="Sections" style="flex-wrap:wrap;border-radius:24px">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${LIVE.tab === k}" aria-current="${LIVE.tab === k}" data-act="la_tab" data-k="${k}" style="flex:1 1 30%">${l}</button>`).join('')}</div>${body}`;
 }
 const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
@@ -2002,6 +2033,9 @@ Object.assign(ACT, {
     el.disabled = true; el.textContent = 'Envoi…';
     shrink(f, 1000).then(r => liveAdminPost({ action: 'variant_photo', id, image: r.url }, 'Photo du modèle enregistrée')).then(() => loadCatalog()).catch(() => { S.toast = 'Photo illisible'; render(); }); return 'stop'; },
   la_vphoto_rm(el) { liveAdminPost({ action: 'variant_photo_delete', id: el.dataset.id }, 'Photo retirée').then(() => loadCatalog()); return 'stop'; },
+  push_on() { pushOn(); return 'stop'; },
+  push_off() { pushOff(); return 'stop'; },
+  push_test() { fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'push_test' }) }).then(() => flash('Notification de test envoyée')).catch(() => flash('Envoi impossible')); return 'stop'; },
   la_sadd() { const name = val('la-sn').trim(); if (!name) { flash('Donnez un nom à la prestation'); return 'stop'; } liveAdminPost({ action: 'service_add', name, category: val('la-sc') }, 'Prestation créée : ajoutez-y vos modèles'); return 'stop'; },
   la_svis(el) { liveAdminPost({ action: 'service_visible', id: el.dataset.id, visible: el.dataset.v === '1' }, el.dataset.v === '1' ? 'Prestation affichée' : 'Prestation masquée'); return 'stop'; },
   la_hours() { const hours = []; for (let w = 1; w <= 7; w++) { const s = val('la-hs-' + w), e = val('la-he-' + w); if (s && e) hours.push({ weekday: w, starts: s, ends: e }); } liveAdminPost({ action: 'hours', hours }, 'Horaires enregistrés'); return 'stop'; },

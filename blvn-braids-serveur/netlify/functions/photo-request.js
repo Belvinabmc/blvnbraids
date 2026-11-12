@@ -16,6 +16,7 @@ exports.handler = async ev => {
       VALUES ($1,$2,'to_verify','Photo d’inspiration',$3,$4,$5,$6) ON CONFLICT (idempotency_key) DO UPDATE SET updated_at=now() RETURNING id, (xmax = 0) AS inserted`,
       [b.email.trim(), b.phone.trim(), msg || null, JSON.stringify({ label: 'Photo d’inspiration', photo: b.image, summary: [] }), sugg ? JSON.stringify(sugg) : null, 'ph:' + b.key]);
     if (r.rows[0].inserted) {
+      await L.notify('Nouvelle photo d’inspiration', `${b.email.trim()}${sugg && sugg.style ? ' · ' + sugg.style : ''}`, '/gestion?tab=todo');
       const ext = m[1].split('/')[1].replace('jpeg', 'jpg');
       if (L.ENV.adminEmail) await L.sendMail({ to: L.ENV.adminEmail, subject: 'Nouvelle photo d’inspiration à traiter',
         html: L.layout('Photo d’inspiration reçue', L.rowsHtml([['E-mail', b.email.trim()], ['Téléphone', b.phone.trim()], ...(sugg && sugg.style ? [['Style reconnu par l’IA', sugg.style]] : []), ...(sugg && sugg.label ? [['Modèle proposé par l’IA', sugg.label]] : [])]) + (msg ? `<p>Message : ${L.esc(msg)}</p>` : '') + '<p>La photo est en pièce jointe. Répondez depuis l’administration (onglet « À traiter ») avec un tarif et une durée.</p>'),

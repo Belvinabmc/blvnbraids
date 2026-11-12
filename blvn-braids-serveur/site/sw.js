@@ -1,6 +1,6 @@
 /* Service worker : permet d’installer le site et de l’ouvrir sans connexion.
    À CHAQUE MISE EN LIGNE, changez le numéro de VERSION ci-dessous pour que les visiteuses reçoivent la nouvelle version. */
-const VERSION = 'blvn-v22';
+const VERSION = 'blvn-v23';
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon-48.png"];
 
 self.addEventListener('install', e => {
@@ -21,4 +21,18 @@ self.addEventListener('fetch', e => {
     return;
   }
   e.respondWith(caches.match(r).then(m => m || fetch(r).then(res => { const cp = res.clone(); caches.open(VERSION).then(c => c.put(r, cp)); return res; })));
+});
+
+/* Notifications de l’appli Blvn Gestion */
+self.addEventListener('push', e => {
+  let d = {}; try { d = e.data ? e.data.json() : {}; } catch (_) { d = { title: 'Blvn Gestion', body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Blvn Gestion', { body: d.body || '', icon: 'icon-gestion-192.png', badge: 'icon-gestion-192.png', tag: d.tag, renotify: true, data: { url: d.url || '/gestion' } }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || '/gestion', self.location.origin).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) if ('focus' in c) { c.navigate ? c.navigate(url).catch(() => {}) : 0; return c.focus(); }
+    return self.clients.openWindow(url);
+  }));
 });

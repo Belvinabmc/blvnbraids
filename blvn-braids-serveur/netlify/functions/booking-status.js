@@ -14,6 +14,7 @@ exports.handler = async ev => {
           for (const lead of [1440, 120]) await L.q("INSERT INTO reminders (booking_id, channel, lead_minutes, send_at) VALUES ($1,'email',$2, $3::timestamptz - make_interval(mins => $2::int)) ON CONFLICT DO NOTHING", [b.id, lead, b.starts_at]);
           await L.mailBookingConfirmed(b);
       await L.promoUsed(b).catch(() => {});
+      await L.notify('Nouvelle réservation payée', `${b.client_name || 'Une cliente'} · ${(b.snapshot || {}).label || ''} · ${L.fmtWhen(new Date(b.starts_at))}`, '/gestion?tab=plan');
       if (/^q:/.test(b.idempotency_key || '')) await L.q("UPDATE requests SET status='quote_accepted', updated_at=now() WHERE id=$1", [b.idempotency_key.slice(2)]).catch(() => {}); }
       }
     }

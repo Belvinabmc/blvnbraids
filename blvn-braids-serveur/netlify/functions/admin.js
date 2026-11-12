@@ -5,6 +5,7 @@ exports.handler = async ev => {
   try {
     await L.ensureSite();
     if (ev.httpMethod === 'GET') {
+      if ((ev.queryStringParameters || {}).push === 'key') return L.json(200, { key: (await L.vapid()).pub });
       const qm = (ev.queryStringParameters || {}).month;
       if (qm) { try { return L.json(200, await L.monthCalendar(qm, await L.settings())); } catch (e) { if (/Mois/.test(e.message)) return L.bad('Mois invalide'); throw e; } }
       const [bk, rq, wh, cat, gal, rev, promos] = await Promise.all([
@@ -149,6 +150,13 @@ exports.handler = async ev => {
       for (const [kind, k, c] of rows) await L.q(`INSERT INTO adjustment_rules (service_id, kind, ${kind}, supplement_cents) VALUES ($1,$2,$3,$4)`, [svc.id, kind, k, c]);
       return L.json(200, { ok: true });
     }
+    if (b.action === 'push_subscribe') {
+      const sub = b.sub || {}; if (!sub.endpoint || !/^https:\/\//.test(sub.endpoint) || !sub.keys) return L.bad('Abonnement invalide');
+      await L.q('INSERT INTO push_subs (endpoint, sub, label) VALUES ($1,$2,$3) ON CONFLICT (endpoint) DO UPDATE SET sub=EXCLUDED.sub, label=EXCLUDED.label', [sub.endpoint, JSON.stringify(sub), String(b.label || '').slice(0, 80)]);
+      return L.json(200, { ok: true });
+    }
+    if (b.action === 'push_unsubscribe') { await L.q('DELETE FROM push_subs WHERE endpoint=$1', [String(b.endpoint || '')]); return L.json(200, { ok: true }); }
+    if (b.action === 'push_test') { await L.notify('Notifications activées 🔔', 'Vous serez prévenue à chaque demande, réservation ou annulation.', '/gestion'); return L.json(200, { ok: true }); }
     if (b.action === 'option_add') {   // nouvelle option : case à cocher (flat) ou quantité (per_unit)
       const label = String(b.label || '').trim().slice(0, 120); if (!label) return L.bad('Donnez un nom à l’option');
       const kind = b.kind === 'per_unit' ? 'per_unit' : 'flat', unit = kind === 'per_unit' ? (String(b.unit || '').trim().slice(0, 30) || 'unité') : null;

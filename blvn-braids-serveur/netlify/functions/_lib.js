@@ -264,6 +264,26 @@ async function issueCodesOnComplete(b) {
   return out;
 }
 
+
+/* ---------- Notifications de l’appli Blvn Gestion (Web Push) ---------- */
+let pushKeys;
+async function vapid() {
+  if (pushKeys) return pushKeys; await ensureSite();
+  let r = (await q('SELECT public_key, private_key FROM push_keys WHERE id=1')).rows[0];
+  if (!r) { const k = require('web-push').generateVAPIDKeys(); await q('INSERT INTO push_keys (id, public_key, private_key) VALUES (1,$1,$2) ON CONFLICT (id) DO NOTHING', [k.publicKey, k.privateKey]); r = (await q('SELECT public_key, private_key FROM push_keys WHERE id=1')).rows[0]; }
+  return (pushKeys = { pub: r.public_key, priv: r.private_key });
+}
+/* Envoie une notification à tous les téléphones de la gérante ; ne fait jamais échouer l’action en cours */
+async function notify(title, body, url = '/gestion') {
+  try {
+    const wp = require('web-push'), k = await vapid();
+    wp.setVapidDetails('mailto:' + (ENV.adminEmail || 'rendezvous@blvnbraids.com'), k.pub, k.priv);
+    const subs = (await q('SELECT endpoint, sub FROM push_subs')).rows;
+    await Promise.all(subs.map(s => wp.sendNotification(s.sub, JSON.stringify({ title, body, url }), { TTL: 86400, urgency: 'high' })
+      .catch(e => { if (e.statusCode === 404 || e.statusCode === 410) return q('DELETE FROM push_subs WHERE endpoint=$1', [s.endpoint]); console.error('push', e.statusCode, e.body); })));
+  } catch (e) { console.error('notify', e); }
+}
+
 /* ---------- Annulation (par la gérante ou par la cliente) ---------- */
 const cancelToken = id => crypto.createHmac('sha256', process.env.QUOTE_SECRET || ENV.adminToken || 'blvn').update('cancel:' + id).digest('hex').slice(0, 32);
 const cancelLink = id => `${ENV.site}/api/cancel?b=${encodeURIComponent(id)}&t=${cancelToken(id)}`;
@@ -287,6 +307,7 @@ async function cancelBooking(cur, { refund = false, noShow = false, by = 'admin'
   await sendMail({ to: cur.contact_email, subject: 'Votre rendez-vous a été annulé',
     html: layout('Rendez-vous annulé', `<p>Bonjour ${esc(cur.client_name || '')},</p><p>${who} du <b>${esc(when)}</b>.</p>${message ? `<p>${esc(message)}</p>` : ''}${money}<p>Vous pouvez reprendre rendez-vous à tout moment sur <a href="${ENV.site}" style="color:#1A1A1A">blvnbraids.com</a>. Pour toute question, répondez à cet e-mail ou écrivez-nous sur Instagram @blvn_braids.</p><p>Blvn Braids</p>`),
     text: `${who} du ${when}. ${message || ''} ${!paid ? '' : noShow ? `Acompte de ${dep} conservé.` : refunded ? `Votre acompte de ${dep} est remboursé (visible sous 5 à 10 jours ouvrés).` : `L’acompte de ${dep} n’est pas remboursé.`}` });
+  if (by === 'client') await notify('Annulation par une cliente', `${cur.client_name || 'Une cliente'} · ${when} · acompte ${paid ? (refunded ? 'remboursé' : 'conservé') : '—'}`, '/gestion?tab=plan');
   if (by === 'client' && ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: `Annulation par la cliente · ${when}`,
     html: layout('Une cliente a annulé', rowsHtml([['Cliente', cur.client_name || ''], ['Rendez-vous', when], ['Prestation', (cur.snapshot || {}).label || ''], ['Acompte', paid ? (refunded ? `${dep} remboursé automatiquement` : `${dep} conservé (moins de 24 h)`) : '—'], ['E-mail', cur.contact_email], ['Téléphone', cur.contact_phone || '']]) + '<p>Le créneau est de nouveau disponible sur le site.</p>'),
     text: `${cur.client_name} a annulé son rendez-vous du ${when}.` }).catch(e => console.error(e));
@@ -342,6 +363,7 @@ async function mailBookingConfirmed(b) {
     text: `Nouvelle réservation\n${rows.map(r => r.join(' : ')).join('\n')}\nCliente : ${b.client_name} ${b.contact_email} ${b.contact_phone}` });
 }
 async function mailRequest(r, p) {
+  await notify('Nouvelle demande de tarif', `${r.client_name || 'Une cliente'} · ${p.label || ''}${r.desired_starts_at ? ' · ' + fmtWhen(new Date(r.desired_starts_at)) : ''}`, '/gestion?tab=todo');
   const when = r.desired_starts_at ? fmtWhen(new Date(r.desired_starts_at)) : 'à définir';
   await sendMail({ to: r.contact_email, subject: 'Votre demande de rendez-vous est bien reçue',
     html: layout('Demande bien reçue', `<p>Bonjour ${esc(r.client_name || '')},</p><p>Votre demande pour <b>${esc(p.label)}</b> (créneau souhaité : ${esc(when)}) est arrivée chez la coiffeuse. Certains montants doivent encore être confirmés : vous recevrez le tarif et la durée par e-mail avant tout paiement. <b>Aucun acompte n’est demandé pour l’instant</b> et le créneau n’est pas encore réservé.</p>${p.summary.length ? `<ul>${p.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}<p>Blvn Braids</p>`),
@@ -378,9 +400,11 @@ const ensureSite = () => (siteReady ||= q(`
     created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now() + interval '6 months',
     used_at timestamptz, used_booking_id uuid, source_booking_id uuid);
   CREATE INDEX IF NOT EXISTS promo_codes_owner ON promo_codes (lower(owner_email));
+  CREATE TABLE IF NOT EXISTS push_keys (id integer PRIMARY KEY, public_key text NOT NULL, private_key text NOT NULL);
+  CREATE TABLE IF NOT EXISTS push_subs (endpoint text PRIMARY KEY, sub jsonb NOT NULL, label text, created_at timestamptz NOT NULL DEFAULT now());
 `).catch(e => { siteReady = null; throw e; }));
 const parseImage = dataUrl => { const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || ''); return m && m[2].length <= 3000000 ? { mime: m[1], data: m[2] } : null; };
 
 const isAdmin = ev => ENV.adminToken && (ev.headers['x-admin-token'] === ENV.adminToken || ev.headers['X-Admin-Token'] === ENV.adminToken);
 
-module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };
+module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, notify, vapid, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };
