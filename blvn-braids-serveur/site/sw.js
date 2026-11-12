@@ -1,6 +1,6 @@
 /* Service worker : permet d’installer le site et de l’ouvrir sans connexion.
    À CHAQUE MISE EN LIGNE, changez le numéro de VERSION ci-dessous pour que les visiteuses reçoivent la nouvelle version. */
-const VERSION = 'blvn-v25';
+const VERSION = 'blvn-v26';
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon-48.png"];
 
 self.addEventListener('install', e => {
@@ -9,7 +9,7 @@ self.addEventListener('install', e => {
     .then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== 'blvn-badge').map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const r = e.request;
@@ -24,9 +24,19 @@ self.addEventListener('fetch', e => {
 });
 
 /* Notifications de l’appli Blvn Gestion */
+/* Pastille sur l’icône : nombre de notifications non lues, remis à zéro à l’ouverture de la gestion */
+async function bumpBadge() {
+  try {
+    const c = await caches.open('blvn-badge'), r = await c.match('/__badge'), n = (r ? +(await r.text()) || 0 : 0) + 1;
+    await c.put('/__badge', new Response(String(n)));
+    if (self.navigator && self.navigator.setAppBadge) await self.navigator.setAppBadge(n);
+  } catch (e) {}
+}
 self.addEventListener('push', e => {
   let d = {}; try { d = e.data ? e.data.json() : {}; } catch (_) { d = { title: 'Blvn Gestion', body: e.data ? e.data.text() : '' }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'Blvn Gestion', { body: d.body || '', icon: 'icon-gestion-192.png', badge: 'icon-gestion-192.png', tag: d.tag, renotify: true, data: { url: d.url || '/gestion' } }));
+  e.waitUntil(Promise.all([
+    self.registration.showNotification(d.title || 'Blvn Gestion', { body: d.body || '', icon: 'icon-gestion-192.png', badge: 'icon-gestion-192.png', tag: d.tag, renotify: true, data: { url: d.url || '/gestion' } }),
+    bumpBadge()]));
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();

@@ -1853,6 +1853,9 @@ document.addEventListener('toggle', e => { const d = e.target; if (d.dataset && 
 const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 const isStandalone = () => { try { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { return false; } };
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent);
+/* Pastille de l’icône : effacée quand la gérante ouvre sa gestion */
+function clearBadge() { try { if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {}); if (window.caches) caches.delete('blvn-badge').catch(() => {}); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && typeof LIVE !== 'undefined' && LIVE.token && S.view === 'admin') clearBadge(); });
 async function pushState() { if (!pushSupported()) { LIVE.push = 'unsupported'; return; }
   try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); LIVE.push = sub && Notification.permission === 'granted' ? 'on' : Notification.permission === 'denied' ? 'denied' : 'off'; } catch (e) { LIVE.push = 'off'; } render(); }
 const b64u = s => { const p = '='.repeat((4 - s.length % 4) % 4), r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
@@ -1869,7 +1872,7 @@ async function pushOn() {
 }
 async function pushOff() { try { const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription(); if (sub) { await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'push_unsubscribe', endpoint: sub.endpoint }) }); await sub.unsubscribe(); } } catch (e) {} LIVE.push = 'off'; S.toast = 'Notifications désactivées sur ce téléphone'; render(); }
 function pushCard() {
-  if (LIVE.push === undefined) { LIVE.push = 'loading'; setTimeout(pushState, 0); }
+  if (LIVE.push === undefined) { LIVE.push = 'loading'; setTimeout(pushState, 0); setTimeout(clearBadge, 0); }
   const st = LIVE.push; let hid = false; try { hid = localStorage.getItem('blvn-push-hide') === '1'; } catch (e) {}
   if (st === 'loading' || (hid && st !== 'on')) return '';
   if (st === 'on') return hid ? '' : `<div class="card" style="display:flex;gap:12px;align-items:center"><span style="font-size:22px">🔔</span><div style="flex:1"><b>Notifications activées</b><br><small class="muted">Vous êtes prévenue à chaque demande, réservation, photo ou annulation.</small></div><button class="btn small ghost" data-act="push_test">Tester</button><button class="btn small ghost" style="padding:4px 12px" data-act="push_hide" aria-label="Masquer">✕</button></div>`;
