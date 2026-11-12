@@ -24,7 +24,9 @@ exports.handler = async ev => {
     const start = new Date(rq.desired_starts_at);
     if (start.getTime() < Date.now() + 3600000) return page('Créneau passé', 'Le créneau demandé est passé ou trop proche. Faites une nouvelle réservation sur le site ou écrivez-nous sur Instagram.');
     const set = await L.settings();
-    const total = rq.admin_price_cents, d = rq.admin_duration_min;
+    const raw0 = (rq.answers || {}).raw || {}; let promo = null;
+    if (raw0.promo) { const pr = await L.checkPromo({ code: raw0.promo, email: rq.contact_email, phone: rq.contact_phone, basePrice: await L.basePriceOf(rq.variant_id) }); if (pr.ok) promo = pr; }
+    const total = Math.max(0, rq.admin_price_cents - (promo ? promo.amount : 0)), d = rq.admin_duration_min;
     const dep = set.depositFixed != null ? Math.min(total, set.depositFixed) : Math.round(total * set.depositRate);
     const end = new Date(start.getTime() + (d + set.margins.buffer_min) * 60000);
     const a = rq.answers || {}, label = a.label || 'Prestation Blvn Braids';
@@ -37,14 +39,14 @@ exports.handler = async ev => {
         bk = (await L.q(`INSERT INTO bookings (service_id, variant_id, status, starts_at, ends_at, duration_min, travel_buffer_min, hold_expires_at, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, rules_version_id, cancellation_version_id, rules_accepted_at, cancellation_accepted_at, idempotency_key)
           VALUES ($1,$2,'held',$3,$4,$5,$6, now() + interval '33 minutes', $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), now(), $19) RETURNING *`,
           [rq.service_id, rq.variant_id, start, end, d, set.margins.buffer_min, !!loc, loc ? JSON.stringify(loc) : null, rq.contact_email, rq.contact_phone, rq.client_name, rq.description, total, dep, total - dep,
-           JSON.stringify({ label, lines: [[label, total]], summary: a.summary || [], duration: d, raw: a.raw || {}, fromRequest: rq.id }), rulesId, cancelId, key])).rows[0];
+           JSON.stringify({ label, lines: [[label, rq.admin_price_cents], ...(promo ? [[L.promoLabel(promo), -promo.amount]] : [])], summary: a.summary || [], duration: d, raw: a.raw || {}, fromRequest: rq.id, promo: promo ? { code: promo.code, amount: promo.amount, kind: promo.kind } : null }), rulesId, cancelId, key])).rows[0];
       }
     } catch (e) {
       if (/bookings_no_overlap/.test(e.message)) return page('Créneau déjà pris', 'Désolée, ce créneau vient d’être réservé par quelqu’un d’autre. Répondez à l’e-mail reçu pour en choisir un autre, ou écrivez-nous sur Instagram.');
       throw e;
     }
     const sess = await L.stripe('/checkout/sessions', {
-      mode: 'payment', locale: 'fr', customer_email: rq.contact_email, client_reference_id: bk.id,
+      mode: 'payment', locale: 'fr', payment_method_types: { 0: 'card' }, customer_email: rq.contact_email, client_reference_id: bk.id,
       success_url: L.ENV.site + '/?paid={CHECKOUT_SESSION_ID}', cancel_url: L.ENV.site + '/?cancelled=' + bk.id,
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       metadata: { booking_id: bk.id },

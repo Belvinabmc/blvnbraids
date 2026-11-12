@@ -17,6 +17,19 @@ exports.handler = async ev => {
     if (ans.home && !(ans.address || '').trim()) return L.bad('Adresse manquante');
     const p = L.price(s, v, ans, set);
     if (p.missing.length) return L.bad('Réponses manquantes : ' + p.missing.join(', '));
+    /* Code promo : vérifié ici, jamais côté navigateur */
+    let promo = null;
+    if (b.promo) {
+      const pr = await L.checkPromo({ code: b.promo, email: contact.email, phone: contact.phone, basePrice: v.p });
+      if (!pr.ok) return L.bad(pr.error);
+      promo = { code: pr.code, amount: pr.amount, kind: pr.kind };
+      ans.promo = pr.code;
+      if (!p.pending && p.duration != null) {
+        p.lines.push([L.promoLabel(pr), -pr.amount]);
+        p.total = Math.max(0, p.total - pr.amount);
+        p.deposit = set.depositFixed != null ? Math.min(p.total, set.depositFixed) : Math.round(p.total * set.depositRate);
+      }
+    }
     const label = `${s.name} · ${v.l}` + (p.summary.filter(x => /^(Grosseur|Longueur)/.test(x)).map(x => x.split(' : ')[1]).join(', ') ? ' · ' + p.summary.filter(x => /^(Grosseur|Longueur)/.test(x)).map(x => x.split(' : ')[1]).join(', ') : '');
     const startsAt = L.parisDate(b.date, b.time);
     if (isNaN(startsAt) || startsAt.getTime() < Date.now()) return L.bad('Créneau invalide');
@@ -38,7 +51,7 @@ exports.handler = async ev => {
     const slotCheck = await L.availability(b.date, p.duration, set);
     if (!slotCheck.slots.some(x => x.time === b.time && x.available) && !existing.rows[0]) return L.bad('Ce créneau vient d’être pris. Choisissez-en un autre.', 409);
     const endsAt = new Date(startsAt.getTime() + (p.duration + set.margins.buffer_min) * 60000);
-    const snapshot = { label, lines: p.lines, summary: p.summary, duration: p.duration, raw: ans, depositRate: set.depositRate };
+    const snapshot = { label, lines: p.lines, summary: p.summary, duration: p.duration, raw: ans, depositRate: set.depositRate, promo };
     let booking;
     if (existing.rows[0]) booking = (await L.q('SELECT * FROM bookings WHERE id=$1', [existing.rows[0].id])).rows[0];
     else {
@@ -50,7 +63,7 @@ exports.handler = async ev => {
     }
     if (booking.checkout_ref && booking.status === 'held') { const sess = await L.stripe('/checkout/sessions/' + booking.checkout_ref, null, 'GET'); if (sess.url) return L.json(200, { kind: 'pay', url: sess.url }); }
     const sess = await L.stripe('/checkout/sessions', {
-      mode: 'payment', locale: 'fr', customer_email: contact.email.trim(), client_reference_id: booking.id,
+      mode: 'payment', locale: 'fr', payment_method_types: { 0: 'card' }, customer_email: contact.email.trim(), client_reference_id: booking.id,
       success_url: L.ENV.site + '/?paid={CHECKOUT_SESSION_ID}', cancel_url: L.ENV.site + '/?cancelled=' + booking.id,
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,   // Stripe impose au moins 30 min
       metadata: { booking_id: booking.id },

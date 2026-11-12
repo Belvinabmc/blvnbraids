@@ -45,6 +45,8 @@ async function settings() {
 
 /* ---------- Catalogue (forme attendue par le site) ---------- */
 async function catalog() {
+  await ensureSite();
+  const vph = await q('SELECT variant_id, extract(epoch from updated_at)::bigint AS t FROM site_variant_photos');
   const [cats, svcs, vars, rules, hair, groups, opts, media, pol] = await Promise.all([
     q('SELECT * FROM service_categories ORDER BY sort_order'),
     q('SELECT * FROM services ORDER BY sort_order'),
@@ -65,7 +67,7 @@ async function catalog() {
       id: s.id, cat: cat.slug, catLabel: cat.label, name: s.name, tpl: s.menu_template || 'coiffure', visible: s.is_visible, photo: photoOf('service', s.id),
       refSize: s.reference_size, refLength: s.reference_length, sizeSupp, lengthSupp, home: s.home_allowed,
       hair: s.hair_enabled ? { perBundle: s.hair_pricing === 'per_bundle', types: hair.rows.filter(h => h.service_id === s.id).map(h => ({ id: h.id, l: h.label, p: h.price_cents, d: h.extra_duration_min || 0 })) } : null,
-      variants: vars.rows.filter(v => v.service_id === s.id).map(v => ({ id: v.id, g: v.grp, l: v.label, p: v.base_price_cents, d: v.base_duration_min, askSize: v.asks_size, askLen: v.asks_length, refSize: v.reference_size, refLen: v.reference_length, quote: v.base_price_cents == null, from: v.is_from_price, hidden: !v.is_visible, photo: photoOf('variant', v.id) })),
+      variants: vars.rows.filter(v => v.service_id === s.id).map(v => ({ id: v.id, g: v.grp, l: v.label, p: v.base_price_cents, d: v.base_duration_min, askSize: v.asks_size, askLen: v.asks_length, refSize: v.reference_size, refLen: v.reference_length, quote: v.base_price_cents == null, from: v.is_from_price, hidden: !v.is_visible, photo: (r => r ? `/api/media?v=${v.id}&t=${r.t}` : null)(vph.rows.find(x => x.variant_id === v.id)) })),
       groups: groups.rows.filter(g => g.service_id === s.id).map(g => ({ id: g.id, l: g.label, kind: g.kind, required: g.required, hidden: !g.is_visible, scope: g.scope || { mode: 'all', ids: [] }, cond: g.cond, price: g.price_cents, unit: g.unit_label || '', min: g.min_value ?? '', max: g.max_value ?? '', ph: g.placeholder || '',
         items: opts.rows.filter(o => o.group_id === g.id).map(o => ({ id: o.id, l: o.label, p: o.price_cents, d: o.extra_duration_min || 0, unit: o.kind === 'per_unit' ? (o.unit_label || '') : '', only: (o.allowed_variant_groups || []).join('|'), hidden: !o.is_visible, photo: photoOf('option', o.id) })) })),
     };
@@ -158,6 +160,139 @@ async function availability(ymd, durationMin, set) {
   return { slots, closed: false, approxDuration: durationMin == null };
 }
 
+/* Calendrier du mois pour la gérante : état de chaque jour (libre, complet, bloqué, fermé, passé) */
+async function monthCalendar(ym, set, durationMin = 180) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new Error('Mois invalide');
+  const [Y, M] = ym.split('-').map(Number), n = new Date(Date.UTC(Y, M, 0)).getUTCDate(), pad = x => String(x).padStart(2, '0');
+  const first = parisDate(`${ym}-01`, '00:00'), last = new Date(parisDate(`${ym}-${pad(n)}`, '23:59').getTime() + 60000);
+  await q("UPDATE bookings SET status='expired' WHERE status='held' AND hold_expires_at < now()");
+  const [hours, busy, off] = await Promise.all([
+    q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY starts_at'),
+    q("SELECT starts_at, ends_at, status FROM bookings WHERE status IN ('held','confirmed') AND ends_at > $1 AND starts_at < $2", [first, last]),
+    q('SELECT lower(during) AS a, upper(during) AS b FROM time_off WHERE during && tstzrange($1,$2)', [first, last]),
+  ]);
+  const m = set.margins, now = Date.now(), minStart = now + m.min_notice_hours * 3600000, need = durationMin + m.buffer_min;
+  const WDS = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }, T = x => new Date(x).getTime(), days = [];
+  for (let d = 1; d <= n; d++) {
+    const ymd = `${ym}-${pad(d)}`, ds = parisDate(ymd, '00:00').getTime(), de = parisDate(ymd, '23:59').getTime() + 60000;
+    const WD = WDS[new Intl.DateTimeFormat('en-GB', { timeZone: TZ, weekday: 'short' }).format(new Date(ds + 43200000))];
+    const hs = hours.rows.filter(h => h.weekday === WD);
+    const booked = busy.rows.filter(b => b.status === 'confirmed' && T(b.starts_at) < de && T(b.ends_at) > ds).length;
+    let status, free = 0;
+    if (de <= now) status = 'past';
+    else if (!hs.length) status = 'closed';
+    else if (off.rows.some(o => T(o.a) < de && T(o.b) > ds)) status = 'blocked';
+    else {
+      for (const h of hs) { const open = parisDate(ymd, h.starts_at.slice(0, 5)).getTime(), close = parisDate(ymd, h.ends_at.slice(0, 5)).getTime();
+        for (let t = open; t + durationMin * 60000 <= close; t += m.slot_step_min * 60000) if (t >= minStart && !busy.rows.some(b => T(b.starts_at) < t + need * 60000 && T(b.ends_at) > t)) free++; }
+      status = free ? 'free' : 'full';
+    }
+    days.push({ date: ymd, weekday: WD, status, free, booked });
+  }
+  return { month: ym, days };
+}
+
+
+/* ---------- Codes promo à usage unique : fidélité et parrainage ---------- */
+const PROMO_MIN = 3500;          // le prix du modèle (hors suppléments) doit dépasser 35 €
+const PROMO_AMOUNT = 500;        // 5 €
+const LOYALTY_EVERY = 4;         // 4 rendez-vous terminés = un code pour le 5e
+const PROMO_RULE = 'Valable une seule fois, sur une prestation de plus de 35 € (prix du modèle, hors suppléments), non cumulable.';
+const genCode = prefix => prefix + '-' + Array.from(crypto.randomBytes(4)).map(x => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[x % 32]).join('');
+const normCode = c => String(c || '').trim().toUpperCase().replace(/\s+/g, '');
+const digits = s => String(s || '').replace(/\D/g, '').slice(-9);
+async function basePriceOf(variantId) { const r = await q('SELECT base_price_cents FROM service_variants WHERE id=$1', [variantId]); return r.rows[0] ? r.rows[0].base_price_cents : null; }
+/* Vérifie un code pour une cliente et un modèle : { ok, amount, kind, ownerName } ou { ok:false, error } */
+async function checkPromo({ code, email, phone, basePrice }) {
+  await ensureSite();
+  const c = normCode(code); if (!c) return { ok: false, error: 'Indiquez un code.' };
+  const r = (await q('SELECT * FROM promo_codes WHERE code=$1', [c])).rows[0];
+  if (!r) return { ok: false, error: 'Ce code n’existe pas.' };
+  if (r.used_at) return { ok: false, error: 'Ce code a déjà été utilisé.' };
+  if (new Date(r.expires_at).getTime() < Date.now()) return { ok: false, error: 'Ce code a expiré.' };
+  if (!(basePrice > PROMO_MIN)) return { ok: false, error: 'Ce code est valable uniquement sur une prestation de plus de 35 € (prix du modèle, hors suppléments).' };
+  const em = String(email || '').trim().toLowerCase();
+  if (r.kind === 'referral_gift') {
+    if (em && em === r.owner_email.toLowerCase()) return { ok: false, error: 'Ce code est à offrir à une amie : vous ne pouvez pas l’utiliser vous-même.' };
+    const ph = digits(phone);
+    const prev = await q("SELECT 1 FROM bookings WHERE status IN ('confirmed','completed') AND (lower(contact_email)=$1 OR ($2 <> '' AND right(regexp_replace(contact_phone,'\D','','g'),9)=$2)) LIMIT 1", [em, ph]);
+    if (prev.rows[0]) return { ok: false, error: 'Ce code est réservé à une première visite.' };
+  } else if (!em || em !== r.owner_email.toLowerCase()) return { ok: false, error: 'Ce code est personnel : utilisez l’adresse e-mail à laquelle vous l’avez reçu.' };
+  return { ok: true, code: c, amount: r.amount_cents, kind: r.kind, ownerName: r.owner_name || '' };
+}
+const promoLabel = (pr) => pr.kind === 'referral_gift' ? `Code parrainage ${pr.code}` : pr.kind === 'loyalty' ? `Code fidélité ${pr.code}` : `Code merci ${pr.code}`;
+/* Un rendez-vous payé « consomme » son code */
+async function promoUsed(b) { const pr = (b.snapshot || {}).promo; if (!pr || !pr.code) return; await ensureSite(); await q('UPDATE promo_codes SET used_at=now(), used_booking_id=$2 WHERE code=$1 AND used_at IS NULL', [pr.code, b.id]).catch(() => {}); }
+async function sendCode(to, name, code, title, intro, kind) {
+  await sendMail({ to, subject: title,
+    html: layout(title, `<p>Bonjour ${esc(name || '')},</p><p>${intro}</p><p style="margin:20px 0;text-align:center"><span style="display:inline-block;border:2px dashed #1A1A1A;border-radius:14px;padding:14px 26px;font-size:26px;letter-spacing:.12em;font-weight:bold">${esc(code)}</span></p><p>${kind === 'referral_gift' ? 'Votre amie le saisit dans « Code promo », à l’étape « Vos coordonnées », lors de sa première réservation sur <a href="' + ENV.site + '" style="color:#1A1A1A">blvnbraids.com</a>.' : 'Saisissez-le dans « Code promo », à l’étape « Vos coordonnées », lors de votre prochaine réservation sur <a href="' + ENV.site + '" style="color:#1A1A1A">blvnbraids.com</a>, avec cette adresse e-mail.'}</p><p style="font-size:13px;color:#555">${PROMO_RULE} Valable 6 mois.</p><p>Blvn Braids</p>`),
+    text: `${intro} Code : ${code}. ${PROMO_RULE} Valable 6 mois.` });
+}
+/* Quand un rendez-vous est marqué terminé : codes fidélité, parrainage et merci */
+async function issueCodesOnComplete(b) {
+  await ensureSite(); const out = [];
+  const base = await basePriceOf(b.variant_id); const em = String(b.contact_email || '').trim().toLowerCase();
+  if (!em) return out;
+  if (base > PROMO_MIN) {
+    // fidélité : tous les 4 rendez-vous terminés éligibles
+    const n = (await q(`SELECT count(*)::int AS n FROM bookings bk JOIN service_variants v ON v.id = bk.variant_id WHERE bk.status='completed' AND lower(bk.contact_email)=$1 AND v.base_price_cents > $2`, [em, PROMO_MIN])).rows[0].n;
+    const given = (await q("SELECT count(*)::int AS n FROM promo_codes WHERE kind='loyalty' AND lower(owner_email)=$1", [em])).rows[0].n;
+    if (Math.floor(n / LOYALTY_EVERY) > given) {
+      const code = genCode('FIDELE'); await q("INSERT INTO promo_codes (code, kind, owner_email, owner_name, amount_cents, source_booking_id) VALUES ($1,'loyalty',$2,$3,$4,$5)", [code, em, b.client_name, PROMO_AMOUNT, b.id]);
+      await sendCode(b.contact_email, b.client_name, code, 'Merci pour votre fidélité : 5 € offerts', `Vous en êtes à ${n} rendez-vous chez Blvn Braids, merci ! Voici <b>5 € de réduction</b> sur votre prochain rendez-vous :`, 'loyalty').catch(e => console.error(e));
+      out.push({ kind: 'loyalty', code });
+    }
+    // code à offrir : un seul actif à la fois
+    const active = (await q("SELECT 1 FROM promo_codes WHERE kind='referral_gift' AND lower(owner_email)=$1 AND used_at IS NULL AND expires_at > now()", [em])).rows[0];
+    if (!active) {
+      const code = genCode('AMIE'); await q("INSERT INTO promo_codes (code, kind, owner_email, owner_name, amount_cents, source_booking_id) VALUES ($1,'referral_gift',$2,$3,$4,$5)", [code, em, b.client_name, PROMO_AMOUNT, b.id]);
+      await sendCode(b.contact_email, b.client_name, code, 'Un code à offrir à une amie', `Merci pour votre visite ! Faites découvrir Blvn Braids : ce code offre <b>5 € de réduction</b> à une amie pour sa première visite. Quand elle sera venue, vous recevrez vous aussi <b>5 €</b> sur votre prochain rendez-vous.`, 'referral_gift').catch(e => console.error(e));
+      out.push({ kind: 'referral_gift', code });
+    }
+  }
+  // merci à la marraine
+  const pr = (b.snapshot || {}).promo;
+  if (pr && pr.kind === 'referral_gift') {
+    const g = (await q('SELECT owner_email, owner_name FROM promo_codes WHERE code=$1', [pr.code])).rows[0];
+    const done = (await q("SELECT 1 FROM promo_codes WHERE kind='referral_thanks' AND source_booking_id=$1", [b.id])).rows[0];
+    if (g && !done) {
+      const code = genCode('MERCI'); await q("INSERT INTO promo_codes (code, kind, owner_email, owner_name, amount_cents, source_booking_id) VALUES ($1,'referral_thanks',$2,$3,$4,$5)", [code, g.owner_email, g.owner_name, PROMO_AMOUNT, b.id]);
+      await sendCode(g.owner_email, g.owner_name, code, 'Merci pour votre recommandation : 5 € offerts', `${esc(b.client_name || 'Votre amie')} est venue grâce à vous, merci ! Voici <b>5 € de réduction</b> sur votre prochain rendez-vous :`, 'referral_thanks').catch(e => console.error(e));
+      out.push({ kind: 'referral_thanks', code });
+    }
+  }
+  return out;
+}
+
+/* ---------- Annulation (par la gérante ou par la cliente) ---------- */
+const cancelToken = id => crypto.createHmac('sha256', process.env.QUOTE_SECRET || ENV.adminToken || 'blvn').update('cancel:' + id).digest('hex').slice(0, 32);
+const cancelLink = id => `${ENV.site}/api/cancel?b=${encodeURIComponent(id)}&t=${cancelToken(id)}`;
+async function cancelBooking(cur, { refund = false, noShow = false, by = 'admin', message = '' } = {}) {
+  let refunded = false;
+  if (refund && cur.status === 'confirmed' && cur.checkout_ref && cur.deposit_cents > 0) {
+    const sess = await stripe('/checkout/sessions/' + cur.checkout_ref, null, 'GET');
+    if (!sess.payment_intent) throw new Error('paiement introuvable');
+    await stripe('/refunds', { payment_intent: sess.payment_intent, reason: 'requested_by_customer', metadata: { booking_id: cur.id } });
+    refunded = true;
+  }
+  await q("UPDATE bookings SET status='cancelled', cancelled_at=now(), snapshot = COALESCE(snapshot, '{}'::jsonb) || jsonb_build_object('cancel', jsonb_build_object('refunded', $2::boolean, 'amount', $3::int, 'at', now(), 'noShow', $4::boolean, 'by', $5::text)) WHERE id=$1", [cur.id, refunded, cur.deposit_cents, !!noShow, by]);
+  await q("UPDATE reminders SET status='cancelled' WHERE booking_id=$1", [cur.id]);
+  // le code promo éventuel redevient utilisable
+  const pr = (cur.snapshot || {}).promo; if (pr && pr.code) await q('UPDATE promo_codes SET used_at=NULL, used_booking_id=NULL WHERE code=$1 AND used_booking_id=$2', [pr.code, cur.id]).catch(() => {});
+  const when = fmtWhen(new Date(cur.starts_at)), dep = eur(cur.deposit_cents), paid = cur.status === 'confirmed' && cur.deposit_cents > 0;
+  const money = !paid ? '' : noShow ? `<p>Vous ne vous êtes pas présentée au rendez-vous : conformément aux conditions acceptées lors de la réservation, l’acompte de ${dep} est conservé.</p>` : refunded
+    ? `<p><b>Votre acompte de ${dep} vous est remboursé intégralement.</b> Le remboursement est lancé aujourd’hui et apparaît sur votre moyen de paiement sous 5 à 10 jours ouvrés, selon votre banque.</p>`
+    : `<p>Conformément aux conditions d’annulation acceptées lors de la réservation (moins de 24 h avant le rendez-vous), l’acompte de ${dep} n’est pas remboursé.</p>`;
+  const who = by === 'client' ? 'Vous avez annulé votre rendez-vous' : 'Votre rendez-vous a été annulé';
+  await sendMail({ to: cur.contact_email, subject: 'Votre rendez-vous a été annulé',
+    html: layout('Rendez-vous annulé', `<p>Bonjour ${esc(cur.client_name || '')},</p><p>${who} du <b>${esc(when)}</b>.</p>${message ? `<p>${esc(message)}</p>` : ''}${money}<p>Vous pouvez reprendre rendez-vous à tout moment sur <a href="${ENV.site}" style="color:#1A1A1A">blvnbraids.com</a>. Pour toute question, répondez à cet e-mail ou écrivez-nous sur Instagram @blvn_braids.</p><p>Blvn Braids</p>`),
+    text: `${who} du ${when}. ${message || ''} ${!paid ? '' : noShow ? `Acompte de ${dep} conservé.` : refunded ? `Votre acompte de ${dep} est remboursé (visible sous 5 à 10 jours ouvrés).` : `L’acompte de ${dep} n’est pas remboursé.`}` });
+  if (by === 'client' && ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: `Annulation par la cliente · ${when}`,
+    html: layout('Une cliente a annulé', rowsHtml([['Cliente', cur.client_name || ''], ['Rendez-vous', when], ['Prestation', (cur.snapshot || {}).label || ''], ['Acompte', paid ? (refunded ? `${dep} remboursé automatiquement` : `${dep} conservé (moins de 24 h)`) : '—'], ['E-mail', cur.contact_email], ['Téléphone', cur.contact_phone || '']]) + '<p>Le créneau est de nouveau disponible sur le site.</p>'),
+    text: `${cur.client_name} a annulé son rendez-vous du ${when}.` }).catch(e => console.error(e));
+  return { refunded };
+}
+
 /* ---------- Stripe (API REST, sans dépendance) ---------- */
 async function stripe(path, params, method = 'POST') {
   if (ENV.dryRun) return { id: 'cs_test_dryrun_' + crypto.randomBytes(6).toString('hex'), url: ENV.site + '/?paid=cs_test_dryrun', payment_status: 'paid', payment_intent: 'pi_dryrun', metadata: params ? Object.fromEntries(Object.entries(params).filter(([k]) => k.startsWith('metadata[')).map(([k, v]) => [k.slice(9, -1), v])) : {} };
@@ -197,9 +332,11 @@ function bookingRows(b) {
 async function mailBookingConfirmed(b) {
   const rows = bookingRows(b), sn = b.snapshot || {};
   const details = (sn.summary || []).length ? `<p style="margin:16px 0 6px;color:#555">Vos choix</p><ul style="margin:0;padding-left:18px">${sn.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+  const priced = (sn.lines || []).filter(x => x && x[1] != null);
+  const breakdown = priced.length > 1 ? `<p style="margin:16px 0 6px;color:#555">Détail du tarif</p>${rowsHtml(priced.map((x, i) => [(i && /^(Grosseur|Longueur) · /.test(x[0]) ? 'Supplément ' + x[0].charAt(0).toLowerCase() + x[0].slice(1) : x[0]), eur(x[1])]))}` : '';
   await sendMail({ to: b.contact_email, subject: `Rendez-vous confirmé · ${fmtWhen(new Date(b.starts_at))}`,
-    html: layout('Votre rendez-vous est confirmé', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Merci pour votre réservation. Voici le récapitulatif :</p>${rowsHtml(rows)}${details}<p style="margin-top:18px">Merci de venir avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</p><p>Vous recevrez un rappel la veille et 2 h avant. Pour toute question, répondez simplement à cet e-mail.</p><p>À très vite,<br>Blvn Braids</p>`),
-    text: `Rendez-vous confirmé\n${rows.map(r => r.join(' : ')).join('\n')}\n${(sn.summary || []).join('\n')}` });
+    html: layout('Votre rendez-vous est confirmé', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Merci pour votre réservation. Voici le récapitulatif :</p>${rowsHtml(rows)}${breakdown}${details}<p style="margin-top:18px">Merci de venir avec les cheveux <b>impérativement propres</b>. Le démêlage préalable n’est pas obligatoire.</p><p>Vous recevrez un rappel la veille et 2 h avant.</p><p style="font-size:14px">Un empêchement ? <a href="${cancelLink(b.id)}" style="color:#1A1A1A"><b>Annuler mon rendez-vous</b></a>. Jusqu’à 24 h avant, votre acompte est remboursé automatiquement ; moins de 24 h avant, il est conservé.</p><div style="margin:22px 0;padding:18px 20px;border:1.5px solid #1A1A1A;border-radius:18px"><p style="margin:0 0 8px"><b>Une dernière petite étape</b></p><p style="margin:0 0 14px">Laissez-nous un message sur Instagram avec votre <b>prénom</b>, la <b>date</b> de votre rendez-vous et une <b>photo du modèle souhaité</b>. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse et les infos pratiques. Petit rappel aussi la veille.</p><a href="https://ig.me/m/blvn_braids" style="display:inline-block;background:#1A1A1A;color:#FAFAFA;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:bold">Écrire sur Instagram</a><p style="margin:10px 0 0;font-size:13px;color:#555">Conseillé, pas obligatoire : votre rendez-vous est déjà confirmé.</p></div><p>Pour toute question, répondez simplement à cet e-mail.</p><p>À très vite,<br>Blvn Braids</p>`),
+    text: `Rendez-vous confirmé\n${rows.map(r => r.join(' : ')).join('\n')}\n${(sn.summary || []).join('\n')}\n\nUne dernière petite étape : laissez-nous un message sur Instagram (@blvn_braids, https://ig.me/m/blvn_braids) avec votre prénom, la date de votre rendez-vous et une photo du modèle souhaité. La coiffeuse vous recontacte pour confirmer et vous envoyer l’adresse.` });
   if (ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: `Nouvelle réservation · ${b.client_name} · ${fmtWhen(new Date(b.starts_at))}`,
     html: layout('Nouvelle réservation payée', rowsHtml([...rows, ['Cliente', b.client_name], ['E-mail', b.contact_email], ['Téléphone', b.contact_phone], ...(b.client_note ? [['Mot de la cliente', b.client_note]] : [])]) + ((sn.summary || []).length ? `<ul>${sn.summary.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')),
     text: `Nouvelle réservation\n${rows.map(r => r.join(' : ')).join('\n')}\nCliente : ${b.client_name} ${b.contact_email} ${b.contact_phone}` });
@@ -216,7 +353,7 @@ async function mailRequest(r, p) {
 async function mailReminder(b, lead) {
   const when = fmtWhen(new Date(b.starts_at));
   await sendMail({ to: b.contact_email, subject: lead === 1440 ? `Rappel : votre rendez-vous demain · ${when}` : `C’est dans 2 h : ${when}`,
-    html: layout(lead === 1440 ? 'À demain !' : 'À tout à l’heure !', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Petit rappel : votre rendez-vous <b>${esc((b.snapshot || {}).label || '')}</b> est prévu ${esc(when)}.</p><p>Cheveux impérativement propres, démêlage non obligatoire. Reste à régler sur place : <b>${eur(b.balance_cents)}</b>.</p><p>Un empêchement ? Répondez à cet e-mail le plus tôt possible.</p><p>Blvn Braids</p>`),
+    html: layout(lead === 1440 ? 'À demain !' : 'À tout à l’heure !', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Petit rappel : votre rendez-vous <b>${esc((b.snapshot || {}).label || '')}</b> est prévu ${esc(when)}.</p><p>Cheveux impérativement propres, démêlage non obligatoire. Reste à régler sur place : <b>${eur(b.balance_cents)}</b>.</p><p>Un empêchement ? <a href="${cancelLink(b.id)}" style="color:#1A1A1A"><b>Annuler mon rendez-vous</b></a>${lead === 1440 ? ' (moins de 24 h avant : l’acompte est conservé)' : ''}, ou répondez à cet e-mail.</p><p>Blvn Braids</p>`),
     text: `Rappel : rendez-vous ${when}. Reste à régler : ${eur(b.balance_cents)}.` });
 }
 
@@ -233,9 +370,17 @@ const ensureSite = () => (siteReady ||= q(`
   CREATE TABLE IF NOT EXISTS site_reviews (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), author text NOT NULL, rating smallint NOT NULL CHECK (rating BETWEEN 1 AND 5), comment text NOT NULL,
     admin_reply text, status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','published','hidden')), source text NOT NULL DEFAULT 'client', created_at timestamptz NOT NULL DEFAULT now());
+  CREATE TABLE IF NOT EXISTS site_variant_photos (
+    variant_id uuid PRIMARY KEY, mime text NOT NULL, data text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+  CREATE TABLE IF NOT EXISTS promo_codes (
+    code text PRIMARY KEY, kind text NOT NULL CHECK (kind IN ('loyalty','referral_gift','referral_thanks')),
+    owner_email text NOT NULL, owner_name text, amount_cents integer NOT NULL DEFAULT 500,
+    created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now() + interval '6 months',
+    used_at timestamptz, used_booking_id uuid, source_booking_id uuid);
+  CREATE INDEX IF NOT EXISTS promo_codes_owner ON promo_codes (lower(owner_email));
 `).catch(e => { siteReady = null; throw e; }));
 const parseImage = dataUrl => { const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || ''); return m && m[2].length <= 3000000 ? { mime: m[1], data: m[2] } : null; };
 
 const isAdmin = ev => ENV.adminToken && (ev.headers['x-admin-token'] === ENV.adminToken || ev.headers['X-Admin-Token'] === ENV.adminToken);
 
-module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage };
+module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };

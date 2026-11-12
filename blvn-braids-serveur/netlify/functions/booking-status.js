@@ -13,6 +13,7 @@ exports.handler = async ev => {
         if (r.rows[0]) { b = r.rows[0]; await L.q("INSERT INTO payments (booking_id, provider, provider_ref, amount_cents, status, verified_at) VALUES ($1,'card',$2,$3,'succeeded',now()) ON CONFLICT (provider, provider_ref) DO NOTHING", [b.id, String(sess.payment_intent || sid), sess.amount_total || b.deposit_cents]);
           for (const lead of [1440, 120]) await L.q("INSERT INTO reminders (booking_id, channel, lead_minutes, send_at) VALUES ($1,'email',$2, $3::timestamptz - make_interval(mins => $2::int)) ON CONFLICT DO NOTHING", [b.id, lead, b.starts_at]);
           await L.mailBookingConfirmed(b);
+      await L.promoUsed(b).catch(() => {});
       if (/^q:/.test(b.idempotency_key || '')) await L.q("UPDATE requests SET status='quote_accepted', updated_at=now() WHERE id=$1", [b.idempotency_key.slice(2)]).catch(() => {}); }
       }
     }
