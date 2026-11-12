@@ -16,7 +16,7 @@ exports.handler = async ev => {
         L.q('SELECT id, author, rating, comment, admin_reply, status, source, created_at FROM site_reviews ORDER BY created_at DESC'),
         L.q('SELECT code, kind, owner_email, owner_name, amount_cents, created_at, expires_at, used_at FROM promo_codes ORDER BY created_at DESC LIMIT 150'),
       ]);
-      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
+      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp, groups: (s.groups || []).map(g => ({ id: g.id, l: g.l, kind: g.kind, price: g.price, unit: g.unit, hidden: g.hidden, items: (g.items || []).map(o => ({ id: o.id, l: o.l, p: o.p, d: o.d, unit: o.unit, hidden: o.hidden })) })) })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
     }
     const b = JSON.parse(ev.body || '{}');
     if (b.action === 'cancel') {
@@ -147,6 +147,35 @@ exports.handler = async ev => {
         for (const k of ok) { const v = src[k]; if (v === '' || v == null) continue; const c = Math.round(+v * 100); if (!(c >= 0)) return L.bad('Montant invalide'); rows.push([kind, k, c]); }
       await L.q("DELETE FROM adjustment_rules WHERE service_id=$1 AND kind IN ('size','length')", [svc.id]);
       for (const [kind, k, c] of rows) await L.q(`INSERT INTO adjustment_rules (service_id, kind, ${kind}, supplement_cents) VALUES ($1,$2,$3,$4)`, [svc.id, kind, k, c]);
+      return L.json(200, { ok: true });
+    }
+    if (b.action === 'option_add') {   // nouvelle option : case à cocher (flat) ou quantité (per_unit)
+      const label = String(b.label || '').trim().slice(0, 120); if (!label) return L.bad('Donnez un nom à l’option');
+      const kind = b.kind === 'per_unit' ? 'per_unit' : 'flat', unit = kind === 'per_unit' ? (String(b.unit || '').trim().slice(0, 30) || 'unité') : null;
+      const pc = b.price === '' || b.price == null ? null : Math.round(+b.price * 100), dm = b.duration === '' || b.duration == null ? 0 : Math.round(+b.duration);
+      if ((pc != null && !(pc >= 0)) || !(dm >= 0)) return L.bad('Prix ou durée invalide');
+      const svc = (await L.q('SELECT id FROM services WHERE id=$1', [b.serviceId])).rows[0]; if (!svc) return L.bad('Prestation introuvable', 404);
+      let gid = b.groupId;
+      if (!gid || gid === '__new') {
+        const gl = String(b.groupLabel || '').trim().slice(0, 80) || 'Suppléments';
+        gid = (await L.q(`INSERT INTO option_groups (service_id, slug, label, kind, required, sort_order, is_visible) VALUES ($1,$2,$3,'multi',false,(SELECT COALESCE(MAX(sort_order),0)+1 FROM option_groups WHERE service_id=$1),true) RETURNING id`, [svc.id, slugify(gl) + '-' + L.crypto.randomBytes(3).toString('hex'), gl])).rows[0].id;
+      } else if (!(await L.q("SELECT 1 FROM option_groups WHERE id=$1 AND service_id=$2 AND kind IN ('multi','single')", [gid, svc.id])).rows[0]) return L.bad('Bloc introuvable');
+      await L.q(`INSERT INTO service_options (group_id, slug, label, kind, unit_label, price_cents, extra_duration_min, sort_order, is_visible) VALUES ($1,$2,$3,$4,$5,$6,$7,(SELECT COALESCE(MAX(sort_order),0)+1 FROM service_options WHERE group_id=$1),true)`,
+        [gid, slugify(label) + '-' + L.crypto.randomBytes(3).toString('hex'), label, kind, unit, pc, dm]);
+      return L.json(200, { ok: true });
+    }
+    if (b.action === 'option_delete') { await L.q('DELETE FROM service_options WHERE id=$1', [b.id]); await L.q('DELETE FROM option_groups g WHERE g.id=$1 AND NOT EXISTS (SELECT 1 FROM service_options o WHERE o.group_id=g.id)', [b.groupId || null]).catch(() => {}); return L.json(200, { ok: true }); }
+    if (b.action === 'options_save') {   // tarifs des options et suppléments (cases à cocher, quantités)
+      const cents = v => v === '' || v == null ? null : Math.round(+v * 100), mins = v => v === '' || v == null ? null : Math.round(+v);
+      for (const o of (b.options || []).slice(0, 200)) {
+        const pc = cents(o.price), dm = mins(o.duration), lb = String(o.label || '').trim().slice(0, 120);
+        if ((pc != null && !(pc >= 0)) || (dm != null && !(dm >= 0))) return L.bad('Prix ou durée invalide');
+        await L.q('UPDATE service_options SET price_cents=$2, extra_duration_min=$3, label=COALESCE(NULLIF($4,\'\'), label), is_visible=$5 WHERE id=$1', [o.id, pc, dm, lb, o.visible !== false]);
+      }
+      for (const g of (b.groups || []).slice(0, 100)) {
+        const pc = cents(g.price); if (pc != null && !(pc >= 0)) return L.bad('Prix invalide');
+        await L.q('UPDATE option_groups SET price_cents=$2 WHERE id=$1', [g.id, pc]);
+      }
       return L.json(200, { ok: true });
     }
     if (b.action === 'service_visible') { await L.q('UPDATE services SET is_visible=$2 WHERE id=$1', [b.id, !!b.visible]); return L.json(200, { ok: true }); }

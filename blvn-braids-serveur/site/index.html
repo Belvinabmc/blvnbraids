@@ -1805,6 +1805,48 @@ async function promoApply(){ const b=S.b, v=vnt(), code=(b.promoIn||'').trim();
     if(j.ok){ b.promoOk={code:j.code,amount:j.amount/100,label:j.label}; b.promoMsg=''; S.toast='Code appliqué : − '+eur(j.amount/100); } else { b.promoOk=null; b.promoMsg=j.error||'Code refusé.'; } }
   catch(e){ b.promoMsg='Vérification impossible. Réessayez.'; }
   LIVE.promoBusy=false; render(); }
+/* ---------- Ajout guidé d’une option, avec exemples et aperçu côté cliente ---------- */
+const OPT_EX = [
+  ['flat', 'Coupe des pointes', 5, 10, ''], ['flat', 'Perles et accessoires', 5, 15, ''], ['flat', 'Mèches de couleur', 10, 0, ''],
+  ['flat', 'Shampoing avant la pose', 10, 20, ''], ['flat', 'Démêlage', 10, 20, ''], ['flat', 'Dessin ou motif', 5, 15, ''],
+  ['per_unit', 'Réparation de locks', 5, 5, 'lock'], ['per_unit', 'Paquet de mèches fourni', 6, 0, 'paquet'], ['per_unit', 'Perles supplémentaires', 1, 0, 'perle']];
+function onState(sid) { LIVE.ons = LIVE.ons || {}; return LIVE.ons[sid] || (LIVE.ons[sid] = { sid, kind: 'flat', label: '', price: '', dur: '', unit: '', group: '', glabel: 'Suppléments' }); }
+function onPreview(o) {
+  const name = (o.label || '').trim() || 'Nom de l’option', p = o.price === '' ? null : +o.price, unit = (o.unit || '').trim() || 'unité';
+  const item = { l: name, p, unit: o.kind === 'per_unit' ? unit : '' };
+  const s = ((LIVE.data || {}).services || []).find(x => x.id === o.sid) || {}, g = (s.groups || []).find(x => x.id === o.group);
+  const title = g ? g.l : ((o.glabel || '').trim() || 'Suppléments');
+  const row = o.kind === 'per_unit'
+    ? `<div class="edit"><label>${esc(name)}<br><small class="muted">${pr(item)}</small></label><input class="qty" type="number" value="0" disabled aria-label="Exemple"></div>`
+    : `<label class="opt"><input type="checkbox" disabled><span>${esc(name)} <b>${pr(item)}</b></span></label>`;
+  const d = +o.dur || 0;
+  return `<div class="card" style="margin:0;background:var(--paper)"><h4>${esc(title)} <span class="muted">(facultatif)</span></h4>${row}</div>
+    <p class="hint" style="margin-top:8px">${p == null ? 'Sans prix, l’option s’affiche « à définir » et la cliente vous envoie une demande au lieu de payer.' : o.kind === 'per_unit' ? `Si la cliente indique 4, on ajoute ${eur(4 * p)} au prix${d ? ` et ${dur(4 * d)} au rendez-vous` : ''}.` : `Si la cliente coche, on ajoute ${eur(p)} au prix${d ? ` et ${dur(d)} au rendez-vous` : ''}.`}</p>`;
+}
+function onForm(s) {
+  const o = onState(s.id), G = (s.groups || []).filter(g => g.kind === 'multi' || g.kind === 'single');
+  if (o.group && !G.some(g => g.id === o.group)) o.group = '';
+  const card = (k, t, d, ex) => `<button class="chip" data-act="on_kind" data-s="${s.id}" data-k="${k}" aria-pressed="${o.kind === k}" style="flex:1 1 45%;text-align:left;border-radius:16px;padding:10px 12px;line-height:1.3"><b>${t}</b><br><small>${d}</small><br><small class="muted">Ex. : ${ex}</small></button>`;
+  return `<details style="margin-top:6px" ${LIVE.onOpen === s.id ? 'open' : ''} data-on-det="${s.id}"><summary>+ Ajouter une option</summary>
+    <p class="fl" style="margin:10px 0 6px">1. Partez d’un exemple <span class="muted">(touchez pour pré-remplir, puis ajustez)</span></p>
+    <div class="chips" style="font-size:13px">${OPT_EX.map((e, i) => `<button class="chip" data-act="on_ex" data-s="${s.id}" data-i="${i}">${esc(e[1])} · ${e[0] === 'per_unit' ? e[2] + ' € / ' + e[4] : '+' + e[2] + ' €'}</button>`).join('')}</div>
+    <p class="fl" style="margin:14px 0 6px">2. Type d’option</p>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:stretch">${card('flat', 'Case à cocher', 'La cliente coche si elle veut l’option.', 'Coupe des pointes +5 €')}${card('per_unit', 'Quantité', 'La cliente indique un nombre, prix à l’unité.', 'Réparation 5 € / lock')}</div>
+    <p class="fl" style="margin:14px 0 6px">3. Détails</p>
+    <label class="fl" for="on-l-${s.id}" style="margin-top:0">Nom affiché à la cliente</label><input id="on-l-${s.id}" type="text" maxlength="120" value="${esc(o.label)}" data-on="label" data-s="${s.id}" placeholder="Ex. : Coupe des pointes">
+    <div class="row" style="gap:8px;flex-wrap:wrap;justify-content:flex-start;margin-top:10px;align-items:center">
+      <div class="fwrap" style="width:110px"><input type="number" min="0" step="any" inputmode="decimal" placeholder="Prix" value="${esc(o.price)}" data-on="price" data-s="${s.id}" aria-label="Prix" style="width:100%;padding-right:26px"><span class="sfx">€</span></div>
+      ${o.kind === 'per_unit' ? `<span style="font-size:14px">par</span><input type="text" maxlength="30" placeholder="lock, paquet…" value="${esc(o.unit)}" data-on="unit" data-s="${s.id}" aria-label="Unité" style="width:120px">` : ''}
+      <div class="fwrap" style="width:130px"><input type="number" min="0" step="5" inputmode="numeric" placeholder="Durée +" value="${esc(o.dur)}" data-on="dur" data-s="${s.id}" aria-label="Durée en plus" style="width:100%;padding-right:38px"><span class="sfx">min</span></div></div>
+    <p class="hint" style="margin-top:6px">Durée en plus : temps ajouté au rendez-vous${o.kind === 'per_unit' ? ', par unité' : ''}. Laissez vide si rien ne change.</p>
+    <label class="fl" for="on-g-${s.id}">Dans quel bloc l’afficher ?</label><select id="on-g-${s.id}" class="sel" style="width:100%;max-width:100%" data-on="group" data-s="${s.id}">${G.map(g => `<option value="${g.id}" ${o.group === g.id ? 'selected' : ''}>${esc(g.l)}</option>`).join('')}<option value="" ${!o.group ? 'selected' : ''}>Nouveau bloc…</option></select>
+    ${!o.group ? `<input type="text" maxlength="80" value="${esc(o.glabel)}" data-on="glabel" data-s="${s.id}" aria-label="Titre du nouveau bloc" placeholder="Ex. : Suppléments" style="margin-top:8px">` : ''}
+    <p class="fl" style="margin:16px 0 6px">4. Ce que verra la cliente</p><div id="on-prev-${s.id}">${onPreview(o)}</div>
+    <button class="btn" style="margin-top:14px" data-act="on_add" data-s="${s.id}">Ajouter cette option</button></details>`;
+}
+document.addEventListener('input', e => { const t = e.target; if (!t.dataset || !t.dataset.on) return; const o = onState(t.dataset.s); o[t.dataset.on] = t.value; LIVE.onOpen = t.dataset.s;
+  if (t.dataset.on === 'group') { render(); return; } const pv = document.getElementById('on-prev-' + t.dataset.s); if (pv) pv.innerHTML = onPreview(o); }, true);
+document.addEventListener('toggle', e => { const d = e.target; if (d.dataset && d.dataset.onDet) LIVE.onOpen = d.open ? d.dataset.onDet : (LIVE.onOpen === d.dataset.onDet ? null : LIVE.onOpen); }, true);
 const WD = ['', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
 function liveAdmin() {
   if (!LIVE.token) return `<h2>Espace réservé</h2><div class="card"><h4>Connexion</h4><p class="muted">Cet espace est réservé à la gérante.</p><label class="fl" for="la-pwd">Mot de passe</label><input id="la-pwd" type="password" autocomplete="current-password">${LIVE.msg ? `<p class="err">${esc(LIVE.msg)}</p>` : ''}<button class="btn" style="margin-top:12px" data-act="la_login">Se connecter</button></div>`;
@@ -1860,6 +1902,19 @@ function liveAdmin() {
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:flex-start"><button class="btn small" data-act="la_variant" data-id="${v.id}">Enregistrer</button>
         <button class="btn small ghost" data-act="la_vvis" data-id="${v.id}" data-v="${v.hidden ? 1 : 0}">${v.hidden ? 'Afficher' : 'Masquer'}</button>
         <button class="btn small ghost" data-act="la_vdel" data-id="${v.id}">${S.delArm === 'lv:' + v.id ? 'Confirmer la suppression' : 'Supprimer'}</button></div></div>`;
+    const optForm = s => { const G = (s.groups || []).filter(g => (g.items || []).length || g.kind === 'number'); if (!G.length) return onForm(s);
+      const n = G.reduce((t, g) => t + (g.items || []).length + (g.kind === 'number' ? 1 : 0), 0);
+      return `<details style="margin-top:6px"><summary>Options et suppléments (${n}) : ce que la cliente coche ou indique</summary>
+        <p class="hint" style="margin-top:8px">Montant ajouté au prix quand la cliente choisit l’option. <b>Vide</b> = « à confirmer » : la cliente envoie une demande au lieu de payer. La durée en plus (en minutes) est ajoutée au rendez-vous.</p>
+        ${G.map(g => `<p class="serif" style="font-style:italic;font-size:19px;margin:14px 0 6px;border-bottom:1.5px solid var(--ink);padding-bottom:3px">${esc(g.l)}</p>
+          ${g.kind === 'number' ? `<div class="row" style="gap:8px;justify-content:flex-start;align-items:center;margin-bottom:8px"><span style="font-size:14px;flex:1">Prix ${g.unit ? 'par ' + esc(g.unit) : 'par unité'}</span><div class="fwrap" style="width:110px"><input id="la-gp-${g.id}" type="number" min="0" step="any" inputmode="decimal" value="${g.price == null ? '' : c2e(g.price)}" style="width:100%;padding-right:26px"><span class="sfx">€</span></div></div>` : ''}
+          ${(g.items || []).map(o => `<div style="padding:8px 0;border-bottom:1px solid #e5e5e5">
+            <input id="la-ol-${o.id}" type="text" maxlength="120" value="${esc(o.l)}" aria-label="Nom de l’option" style="width:100%">
+            <div class="row" style="gap:8px;flex-wrap:wrap;justify-content:flex-start;margin-top:8px;align-items:center">
+              <div class="fwrap" style="width:110px"><input id="la-op-${o.id}" type="number" min="0" step="any" inputmode="decimal" placeholder="Prix" value="${o.p == null ? '' : c2e(o.p)}" style="width:100%;padding-right:26px"><span class="sfx">€</span></div>${o.unit ? `<span class="muted" style="font-size:13px">par ${esc(o.unit)}</span>` : ''}
+              <div class="fwrap" style="width:116px"><input id="la-od-${o.id}" type="number" min="0" step="5" inputmode="numeric" placeholder="Durée +" value="${o.d || ''}" style="width:100%;padding-right:38px"><span class="sfx">min</span></div>
+              <label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" id="la-ov-${o.id}" ${o.hidden ? '' : 'checked'}>Visible</label><button class="btn small ghost" style="font-size:12px;padding:6px 12px" data-act="la_odel" data-id="${o.id}" data-g="${g.id}">${S.delArm === 'lo:' + o.id ? 'Confirmer' : 'Supprimer'}</button></div></div>`).join('')}`).join('')}
+        <button class="btn small" style="margin-top:12px" data-act="la_opts" data-s="${s.id}">Enregistrer les options</button></details>${onForm(s)}`; };
     const suppForm = s => `<details style="margin-top:6px"><summary>Suppléments de prix (grosseur et longueur)</summary>
         <p class="hint" style="margin-top:8px">Montant <b>ajouté</b> au prix du modèle quand la cliente choisit autre chose que ce qui est compris. <b>0</b> = même prix. <b>Vide</b> = « à confirmer » : la cliente envoie une demande au lieu de payer.</p>
         <p class="fl" style="margin-bottom:4px">Grosseur</p><div class="row" style="gap:8px;flex-wrap:wrap;justify-content:flex-start">${SIZES.map(([k, l]) => `<label style="display:flex;flex-direction:column;font-size:12px;width:104px">${l}<span class="fwrap"><input id="la-ss-${s.id}-${k}" type="number" min="0" step="any" inputmode="decimal" value="${(s.sizeSupp || {})[k] == null ? '' : c2e(s.sizeSupp[k])}" style="width:100%;padding-right:26px"><span class="sfx">€</span></span></label>`).join('')}</div>
@@ -1880,7 +1935,7 @@ function liveAdmin() {
         <label class="fl" for="la-sc">Catégorie</label><select id="la-sc" class="sel" style="max-width:100%;width:100%">${CT.map(c => `<option value="${esc(c.id)}">${esc(c.label)}${c.active ? '' : ' (masquée)'}</option>`).join('')}</select>
         <button class="btn" style="margin-top:12px" data-act="la_sadd">Créer la prestation</button></div>` +
       SV.map(s => `<div class="row" style="margin-top:22px"><h3 style="margin:0;flex:1">${esc(s.name)}</h3>${s.visible ? '<span class="badge ok">Visible</span>' : '<span class="badge">Masquée</span>'}<button class="btn small ghost" data-act="la_svis" data-id="${s.id}" data-v="${s.visible ? 0 : 1}">${s.visible ? 'Masquer' : 'Afficher'}</button></div>
-        <div class="card">${famBlocks(s) || '<p class="muted">Aucun modèle pour l’instant.</p>'}${addForm(s)}${suppForm(s)}</div>`).join('') + `<datalist id="la-fams">${[...new Set(VS.map(v => v.group).filter(Boolean))].map(g => `<option value="${esc(g)}">`).join('')}</datalist>`; }
+        <div class="card">${famBlocks(s) || '<p class="muted">Aucun modèle pour l’instant.</p>'}${addForm(s)}${suppForm(s)}${optForm(s)}</div>`).join('') + `<datalist id="la-fams">${[...new Set(VS.map(v => v.group).filter(Boolean))].map(g => `<option value="${esc(g)}">`).join('')}</datalist>`; }
 
   if (LIVE.tab === 'hours') body = `<p class="muted">Vos jours et heures d’ouverture. Laissez un jour vide pour le fermer. Les créneaux proposés aux clientes en découlent (par pas de 30 min, 30 min de battement entre deux rendez-vous, 24 h de préavis minimum).</p><div class="card">${[1, 2, 3, 4, 5, 6, 7].map(w => { const h = d.hours.find(x => x.weekday === w) || {}; return `<div class="edit"><label style="width:92px">${WD[w]}</label><input id="la-hs-${w}" type="time" value="${(h.starts_at || '').slice(0, 5)}" style="width:110px"><span class="muted">→</span><input id="la-he-${w}" type="time" value="${(h.ends_at || '').slice(0, 5)}" style="width:110px"></div>`; }).join('')}<button class="btn" style="margin-top:12px" data-act="la_hours">Enregistrer les horaires</button></div>
     <div class="card"><h4>Bloquer une journée</h4><p class="muted">Congé, formation… aucune réservation ne sera possible ce jour-là.</p><input id="la-off" type="date"><button class="btn ghost" style="margin-top:10px" data-act="la_timeoff">Bloquer ce jour</button></div>`;
@@ -1929,6 +1984,16 @@ Object.assign(ACT, {
       S.toast = !r.ok ? (j.error || 'Erreur') : j.deleted ? 'Modèle supprimé' : 'Ce modèle a déjà des réservations : il a été masqué au lieu d’être supprimé'; } catch (e) { S.toast = 'Connexion impossible'; }
       await liveAdminLoad(); loadCatalog(); })();
     return 'stop'; },
+  on_kind(el) { const o = onState(el.dataset.s); o.kind = el.dataset.k; LIVE.onOpen = el.dataset.s; return 'keep'; },
+  on_ex(el) { const o = onState(el.dataset.s), e = OPT_EX[+el.dataset.i]; Object.assign(o, { kind: e[0], label: e[1], price: String(e[2]), dur: e[3] ? String(e[3]) : '', unit: e[4] }); LIVE.onOpen = el.dataset.s; return 'keep'; },
+  on_add(el) { const o = onState(el.dataset.s); if (!(o.label || '').trim()) { flash('Donnez un nom à l’option'); return 'stop'; }
+    liveAdminPost({ action: 'option_add', serviceId: o.sid, kind: o.kind, label: o.label, price: o.price, duration: o.dur, unit: o.unit, groupId: o.group || '__new', groupLabel: o.glabel }, 'Option ajoutée : elle est visible côté cliente').then(() => { delete (LIVE.ons || {})[o.sid]; LIVE.onOpen = null; render(); }); return 'stop'; },
+  la_odel(el) { const k = 'lo:' + el.dataset.id; if (S.delArm !== k) { S.delArm = k; return 'keep'; } S.delArm = ''; liveAdminPost({ action: 'option_delete', id: el.dataset.id, groupId: el.dataset.g }, 'Option supprimée'); return 'stop'; },
+  la_opts(el) { const s = ((LIVE.data || {}).services || []).find(x => x.id === el.dataset.s); if (!s) return 'stop';
+    const options = [], groups = [];
+    (s.groups || []).forEach(g => { if (g.kind === 'number') groups.push({ id: g.id, price: val('la-gp-' + g.id) });
+      (g.items || []).forEach(o => options.push({ id: o.id, label: val('la-ol-' + o.id), price: val('la-op-' + o.id), duration: val('la-od-' + o.id), visible: !!(document.getElementById('la-ov-' + o.id) || {}).checked })); });
+    liveAdminPost({ action: 'options_save', options, groups }, 'Options enregistrées'); return 'stop'; },
   la_supp(el) { const s = el.dataset.s, size = {}, length = {}; SIZES.forEach(([k]) => size[k] = val('la-ss-' + s + '-' + k)); LENGTHS.filter(x => x[0] !== 'other').forEach(([k]) => length[k] = val('la-ls-' + s + '-' + k));
     liveAdminPost({ action: 'supplements', serviceId: s, size, length }, 'Suppléments enregistrés'); return 'stop'; },
   promo_apply() { promoApply(); return 'stop'; },
