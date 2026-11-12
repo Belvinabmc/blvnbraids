@@ -59,13 +59,14 @@ exports.handler = async ev => {
     if (b.action === 'close') {
       const r = await L.q("UPDATE requests SET status='closed', updated_at=now() WHERE id=$1 AND status <> 'closed' RETURNING *", [b.id]);
       const rq = r.rows[0];
+      let sent = false, mailErr = null;
       if (rq && rq.contact_email && b.notify !== false) {
         const label = (rq.answers || {}).label || 'votre demande', msg = String(b.message || '').trim().slice(0, 500);
-        await L.sendMail({ to: rq.contact_email, subject: 'Votre demande Blvn Braids',
+        sent = await L.sendMail({ to: rq.contact_email, subject: 'Votre demande Blvn Braids',
           html: L.layout('Votre demande n’a pas pu être retenue', `<p>Bonjour ${L.esc(rq.client_name || '')},</p><p>Nous ne pouvons malheureusement pas donner suite à votre demande pour <b>${L.esc(label)}</b>${rq.desired_starts_at ? ' (' + L.esc(L.fmtWhen(new Date(rq.desired_starts_at))) + ')' : ''}.</p>${msg ? `<p>${L.esc(msg)}</p>` : ''}<p><b>Aucun paiement n’a été effectué</b> et aucun créneau n’a été réservé.</p><p>Vous pouvez faire une nouvelle demande sur <a href="${L.ENV.site}" style="color:#1A1A1A">blvnbraids.com</a> ou nous écrire sur Instagram @blvn_braids.</p><p>Blvn Braids</p>`),
-          text: `Nous ne pouvons pas donner suite à votre demande pour ${label}. ${msg} Aucun paiement n’a été effectué.` }).catch(e => console.error(e));
+          text: `Nous ne pouvons pas donner suite à votre demande pour ${label}. ${msg} Aucun paiement n’a été effectué.` }).then(ok => { if (!ok) mailErr = 'refusé par le service d’e-mails'; return !!ok; }, e => { console.error('refus mail', e); mailErr = String(e.message || e).slice(0, 160); return false; });
       }
-      return L.json(200, { ok: true, notified: !!(rq && rq.contact_email && b.notify !== false) });
+      return L.json(200, { ok: true, notified: !!sent, already: !rq, email: rq ? rq.contact_email : null, mailError: mailErr });
     }
     if (b.action === 'variant') {   // durée, prix, référence d’un modèle
       const d = b.duration === '' || b.duration == null ? null : Math.round(+b.duration); const p = b.price === '' || b.price == null ? null : Math.round(+b.price * 100);
