@@ -7,3 +7,10 @@
   Cache-Control: no-cache
 /sw.js
   Cache-Control: no-cache
+
+/gestion
+  Cache-Control: no-cache
+  X-Robots-Tag: noindex
+/gestion.html
+  Cache-Control: no-cache
+  X-Robots-Tag: noindex

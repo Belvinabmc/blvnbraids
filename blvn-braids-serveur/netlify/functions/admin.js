@@ -117,6 +117,15 @@ exports.handler = async ev => {
          b.askSize && SIZE_OK.includes(b.refSize) ? b.refSize : null, b.askLen && LEN_OK.includes(b.refLen) ? b.refLen : null, ord]);
       return L.json(200, { ok: true });
     }
+    if (b.action === 'variant_meta') {   // nom, famille et prestation d’un modèle
+      const label = String(b.label || '').trim().slice(0, 80); if (!label) return L.bad('Nom requis');
+      const cur = (await L.q('SELECT service_id FROM service_variants WHERE id=$1', [b.id])).rows[0]; if (!cur) return L.bad('Modèle introuvable', 404);
+      const sid = b.serviceId || cur.service_id;
+      if (sid !== cur.service_id && !(await L.q('SELECT 1 FROM services WHERE id=$1', [sid])).rows[0]) return L.bad('Prestation introuvable');
+      const moved = sid !== cur.service_id;
+      await L.q(`UPDATE service_variants SET label=$2, grp=$3, service_id=$4${moved ? ', sort_order=(SELECT COALESCE(MAX(sort_order),0)+1 FROM service_variants WHERE service_id=$4)' : ''} WHERE id=$1`, [b.id, label, String(b.group || '').trim().slice(0, 60), sid]);
+      return L.json(200, { ok: true, moved });
+    }
     if (b.action === 'variant_rename') { const label = String(b.label || '').trim().slice(0, 80); if (!label) return L.bad('Nom requis'); await L.q('UPDATE service_variants SET label=$2 WHERE id=$1', [b.id, label]); return L.json(200, { ok: true }); }
     if (b.action === 'variant_visible') { await L.q('UPDATE service_variants SET is_visible=$2 WHERE id=$1', [b.id, !!b.visible]); return L.json(200, { ok: true }); }
     if (b.action === 'variant_delete') {

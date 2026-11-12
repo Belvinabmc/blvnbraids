@@ -1307,10 +1307,11 @@ function afterRender(changed){
    la protection réelle viendra avec la connexion administrateur du back-end. Accès par l’adresse secrète ?gestion. */
 /* L’espace de gestion ne s’ouvre que par l’adresse secrète blvnbraids.com/?gestion.
    L’onglet n’apparaît que lorsque la gérante est connectée ; sans le mot de passe, le serveur refuse tout. */
-const ADMIN_ENTRY=SITE_MODE&&/[?&]gestion\b/.test(location.search);
+const ADMIN_ENTRY=SITE_MODE&&(/[?&]gestion\b/.test(location.search)||/^\/gestion(\.html)?\/?$/.test(location.pathname));
 try{ localStorage.removeItem('blvn-admin'); }catch(e){}
 if(ADMIN_ENTRY){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }
-const ADMIN_OK_FN=()=>!SITE_MODE||ADMIN_ENTRY||!!(typeof LIVE!=='undefined'&&LIVE.token);
+const ADMIN_OK_FN=()=>!SITE_MODE||ADMIN_ENTRY||GESTION_APP||!!(typeof LIVE!=='undefined'&&LIVE.token);
+const GESTION_APP=SITE_MODE&&/\/gestion(\.html)?\/?$/.test(location.pathname);
 if(SITE_MODE&&'serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){ window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
 document.addEventListener('error',e=>{ const v=e.target; if(v&&v.tagName==='VIDEO'&&v.outerHTML){ v.outerHTML='<p class="vmiss">Cette vidéo n’est plus disponible dans l’aperçu.</p>'; } },true);
 const TABS=[['home','Accueil','home'],['book','Réserver','cal'],['gallery','Galerie','img'],['loyalty','Fidélité','star'],['admin','Admin','gear']];
@@ -1831,6 +1832,8 @@ function liveAdmin() {
     const sizeOpts = cur => `<option value="">Grosseur comprise…</option>${SIZES.map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`;
     const lenOpts = cur => `<option value="">Longueur comprise…</option>${LENGTHS.filter(x => x[0] !== 'other').map(([k, l]) => `<option value="${k}" ${cur === k ? 'selected' : ''}>${l}</option>`).join('')}`;
     const svOf = v => SV.find(x => x.id === v.serviceId) || {};
+    const famBlocks = s => { const vs = VS.filter(v => v.serviceId === s.id), fams = [...new Set(vs.map(v => v.group || ''))];
+      return fams.map(g => `<p class="serif" style="font-style:italic;font-size:21px;margin:${g === fams[0] ? '0' : '18px'} 0 8px;border-bottom:1.5px solid var(--ink);padding-bottom:4px">${g ? esc(g) : 'Sans famille'}</p>` + vs.filter(v => (v.group || '') === g).map(vrow).join('')).join(''); };
     const payInfo = v => { const s = svOf(v), no = '<span style="color:#b3261e">Demande d’abord</span>', ok = '<span style="color:#1f7a3a">Acompte payé directement</span>';
       if (v.price == null) return no + ' : pas de prix (« sur devis »).'; if (!v.duration) return no + ' : pas de durée.';
       const parts = [];
@@ -1840,10 +1843,12 @@ function liveAdmin() {
         if (miss.length) parts.push(`${nom} ${miss.join(', ')}`); }
       return ok + (parts.length ? `, sauf si la cliente choisit : ${parts.join(' ; ')} (supplément non renseigné → demande).` : ' pour tous les choix.'); };
     const vrow = v => `<div class="arow2"><div class="row" style="align-items:flex-start"><b style="min-width:0">${esc(v.label)}</b>${v.hidden ? '<span class="badge">Masqué</span>' : ''}</div>
-        <small class="muted">${v.price == null ? 'sur devis' : eur(c2e(v.price))}${v.duration ? ' · ' + dur(v.duration) : ' · durée à définir'}</small>
+        <small class="muted">${esc(svOf(v).name || '')}${v.group ? ' › ' + esc(v.group) : ''} · ${v.price == null ? 'sur devis' : eur(c2e(v.price))}${v.duration ? ' · ' + dur(v.duration) : ' · durée à définir'}</small>
         <p style="margin:6px 0 0;font-size:13px">${payInfo(v)}</p>
         <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;justify-content:flex-start">
-        <input id="la-vn-${v.id}" type="text" maxlength="80" value="${esc(v.label)}" aria-label="Nom du modèle" style="flex:1 1 100%">
+        <label class="fl" for="la-vn-${v.id}" style="flex:1 1 100%;margin:0">Nom du modèle</label><input id="la-vn-${v.id}" type="text" maxlength="80" value="${esc(v.label)}" style="flex:1 1 100%">
+        <label class="fl" for="la-vg-${v.id}" style="flex:1 1 100%;margin:4px 0 0">Famille <span class="muted">(le titre au-dessus du modèle, côté cliente)</span></label><input id="la-vg-${v.id}" type="text" maxlength="60" list="la-fams" value="${esc(v.group || '')}" placeholder="Sans famille" style="flex:1 1 100%">
+        <label class="fl" for="la-vsv-${v.id}" style="flex:1 1 100%;margin:4px 0 0">Prestation</label><select id="la-vsv-${v.id}" class="sel" style="flex:1 1 100%;max-width:100%">${SV.map(x => `<option value="${x.id}" ${x.id === v.serviceId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
         <div class="fwrap" style="width:96px"><input id="la-vp-${v.id}" type="number" min="0" step="any" inputmode="decimal" placeholder="Prix" value="${v.price == null ? '' : c2e(v.price)}" style="width:100%;padding-right:26px"><span class="sfx">€</span></div>
         <div class="fwrap" style="width:104px"><input id="la-vd-${v.id}" type="number" min="15" step="15" inputmode="numeric" placeholder="Durée" value="${v.duration || ''}" style="width:100%;padding-right:38px"><span class="sfx">min</span></div></div>
         <label class="opt" style="padding:8px 0 4px"><input type="checkbox" id="la-vas-${v.id}" ${v.askSize ? 'checked' : ''}><span>La cliente choisit la <b>grosseur</b></span></label>
@@ -1869,13 +1874,13 @@ function liveAdmin() {
         <label class="opt"><input type="checkbox" id="la-nln-${s.id}"><span>La cliente choisit la longueur</span></label><select id="la-nrl-${s.id}" class="sel">${lenOpts('')}</select>
         <p class="hint">Sans prix : « sur devis ». Sans durée : la cliente envoie une demande au lieu de payer directement.</p>
         <button class="btn" style="margin-top:10px" data-act="la_vadd" data-s="${s.id}">Ajouter ce modèle</button></details>`;
-    body = `<div class="card"><h4>Acompte direct ou demande ?</h4><p style="margin:0 0 6px;font-size:14px"><b>La cliente paie l’acompte tout de suite</b> quand le site connaît le prix exact : le modèle a un prix et une durée, et chaque choix qu’elle fait (grosseur, longueur) est soit <b>compris</b>, soit accompagné d’un <b>supplément</b> renseigné.</p><p style="margin:0;font-size:14px"><b>Elle vous envoie d’abord une demande</b> (sans payer) dès qu’un montant manque : pas de prix, pas de durée, pas de grosseur ou longueur « comprise », ou un supplément laissé vide. Vous répondez avec le tarif, elle reçoit un lien pour payer.</p><p class="hint" style="margin-top:8px">Sous chaque modèle, une ligne verte ou rouge vous dit dans quel cas il se trouve.</p></div><p class="muted">Ajoutez, renommez, masquez ou supprimez vos modèles. Pour qu’un modèle soit réservable avec acompte, il lui faut un <b>prix</b> et une <b>durée</b>.${miss ? ` <b>${miss} modèle${miss > 1 ? 's' : ''}</b> n’${miss > 1 ? 'ont' : 'a'} pas encore de durée.` : ''}</p>
-      <div class="card"><h4>Nouvelle prestation</h4><p class="muted">Une nouvelle famille de services (ex. : « Crochet braids »). Ajoutez-y ensuite vos modèles.</p>
+    body = `<div class="card"><h4>Acompte direct ou demande ?</h4><p style="margin:0 0 6px;font-size:14px"><b>La cliente paie l’acompte tout de suite</b> quand le site connaît le prix exact : le modèle a un prix et une durée, et chaque choix qu’elle fait (grosseur, longueur) est soit <b>compris</b>, soit accompagné d’un <b>supplément</b> renseigné.</p><p style="margin:0;font-size:14px"><b>Elle vous envoie d’abord une demande</b> (sans payer) dès qu’un montant manque : pas de prix, pas de durée, pas de grosseur ou longueur « comprise », ou un supplément laissé vide. Vous répondez avec le tarif, elle reçoit un lien pour payer.</p><p class="hint" style="margin-top:8px">Sous chaque modèle, une ligne verte ou rouge vous dit dans quel cas il se trouve.</p></div><div class="card"><h4>Comment c’est rangé</h4><p style="margin:0;font-size:14px"><b>Prestation</b> (ex. : Locks et entretien) › <b>Famille</b> (ex. : Retwist) › <b>Modèle</b> (ex. : Jusqu’à 40 locks). Les modèles sont classés ici par famille, exactement comme les clientes les voient. Vous pouvez changer la famille ou la prestation d’un modèle directement dans sa fiche.</p></div><p class="muted">Ajoutez, renommez, masquez ou supprimez vos modèles. Pour qu’un modèle soit réservable avec acompte, il lui faut un <b>prix</b> et une <b>durée</b>.${miss ? ` <b>${miss} modèle${miss > 1 ? 's' : ''}</b> n’${miss > 1 ? 'ont' : 'a'} pas encore de durée.` : ''}</p>
+      <div class="card"><h4>Nouvelle prestation</h4><p class="muted">Une nouvelle catégorie de coiffures (ex. : « Crochet braids »). Ajoutez-y ensuite vos modèles, rangés par famille.</p>
         <label class="fl" for="la-sn">Nom</label><input id="la-sn" type="text" maxlength="60">
         <label class="fl" for="la-sc">Catégorie</label><select id="la-sc" class="sel" style="max-width:100%;width:100%">${CT.map(c => `<option value="${esc(c.id)}">${esc(c.label)}${c.active ? '' : ' (masquée)'}</option>`).join('')}</select>
         <button class="btn" style="margin-top:12px" data-act="la_sadd">Créer la prestation</button></div>` +
       SV.map(s => `<div class="row" style="margin-top:22px"><h3 style="margin:0;flex:1">${esc(s.name)}</h3>${s.visible ? '<span class="badge ok">Visible</span>' : '<span class="badge">Masquée</span>'}<button class="btn small ghost" data-act="la_svis" data-id="${s.id}" data-v="${s.visible ? 0 : 1}">${s.visible ? 'Masquer' : 'Afficher'}</button></div>
-        <div class="card">${VS.filter(v => v.serviceId === s.id).map(vrow).join('') || '<p class="muted">Aucun modèle pour l’instant.</p>'}${addForm(s)}${suppForm(s)}</div>`).join(''); }
+        <div class="card">${famBlocks(s) || '<p class="muted">Aucun modèle pour l’instant.</p>'}${addForm(s)}${suppForm(s)}</div>`).join('') + `<datalist id="la-fams">${[...new Set(VS.map(v => v.group).filter(Boolean))].map(g => `<option value="${esc(g)}">`).join('')}</datalist>`; }
 
   if (LIVE.tab === 'hours') body = `<p class="muted">Vos jours et heures d’ouverture. Laissez un jour vide pour le fermer. Les créneaux proposés aux clientes en découlent (par pas de 30 min, 30 min de battement entre deux rendez-vous, 24 h de préavis minimum).</p><div class="card">${[1, 2, 3, 4, 5, 6, 7].map(w => { const h = d.hours.find(x => x.weekday === w) || {}; return `<div class="edit"><label style="width:92px">${WD[w]}</label><input id="la-hs-${w}" type="time" value="${(h.starts_at || '').slice(0, 5)}" style="width:110px"><span class="muted">→</span><input id="la-he-${w}" type="time" value="${(h.ends_at || '').slice(0, 5)}" style="width:110px"></div>`; }).join('')}<button class="btn" style="margin-top:12px" data-act="la_hours">Enregistrer les horaires</button></div>
     <div class="card"><h4>Bloquer une journée</h4><p class="muted">Congé, formation… aucune réservation ne sera possible ce jour-là.</p><input id="la-off" type="date"><button class="btn ghost" style="margin-top:10px" data-act="la_timeoff">Bloquer ce jour</button></div>`;
@@ -1911,7 +1916,8 @@ Object.assign(ACT, {
   la_complete(el) { liveAdminPost({ action: 'complete', id: el.dataset.id }, 'Rendez-vous terminé · codes promo envoyés si la cliente y a droit'); return 'stop'; },
   la_variant(el) { const id = el.dataset.id, nm = val('la-vn-' + id).trim();
     (async () => { const cur = ((LIVE.data || {}).variants || []).find(x => x.id === id) || {};
-      if (nm && nm !== cur.label) await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'variant_rename', id, label: nm }) }).catch(() => {});
+      const gp = val('la-vg-' + id).trim(), sv = val('la-vsv-' + id) || cur.serviceId;
+      if ((nm && nm !== cur.label) || gp !== (cur.group || '') || sv !== cur.serviceId) await fetch(API('admin'), { method: 'POST', headers: hdrs(), body: JSON.stringify({ action: 'variant_meta', id, label: nm || cur.label, group: gp, serviceId: sv }) }).catch(() => {});
       const ck = x => !!(document.getElementById(x) || {}).checked; liveAdminPost({ action: 'variant', id, price: val('la-vp-' + id), duration: val('la-vd-' + id), askSize: ck('la-vas-' + id), askLen: ck('la-val-' + id), refSize: val('la-vs-' + id), refLen: val('la-vl-' + id) }, 'Modèle enregistré'); })();
     return 'stop'; },
   la_vadd(el) { const s = el.dataset.s, label = val('la-nl-' + s).trim(), ck = id => !!(document.getElementById(id) || {}).checked;
@@ -2025,7 +2031,7 @@ document.addEventListener('change',async e=>{
 runIntro();
 initGL();
 render();
-if(SITE_MODE){ S.ai.can=true; S.gallery=[]; S.reviews=[]; if(ADMIN_ENTRY) S.view='admin'; loadCatalog().then(liveReturn); loadSite(); }
+if(SITE_MODE){ S.ai.can=true; S.gallery=[]; S.reviews=[]; if(ADMIN_ENTRY||GESTION_APP) S.view='admin'; loadCatalog().then(liveReturn); loadSite(); }
 (async()=>{ try{ const dl=await claude.use('downloads'); if(dl) S.dl=dl; }catch(_){}
   try{ const sm=await claude.use('sample'); if(sm){ const l=await sm.limits(); S.ai.can=!!(l&&l.images); } }catch(_){} if(S.view==='home')render(); })();
 

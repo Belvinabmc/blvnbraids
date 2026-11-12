@@ -1,6 +1,6 @@
 /* Service worker : permet d’installer le site et de l’ouvrir sans connexion.
    À CHAQUE MISE EN LIGNE, changez le numéro de VERSION ci-dessous pour que les visiteuses reçoivent la nouvelle version. */
-const VERSION = 'blvn-v15';
+const VERSION = 'blvn-v19';
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon-48.png"];
 
 self.addEventListener('install', e => {
@@ -15,8 +15,9 @@ self.addEventListener('fetch', e => {
   const r = e.request;
   if (r.method !== 'GET' || new URL(r.url).origin !== self.location.origin || new URL(r.url).pathname.startsWith('/api/') || new URL(r.url).pathname.startsWith('/.netlify/')) return;
   if (r.mode === 'navigate') {   // pages : réseau d’abord (mises à jour), cache en secours (hors connexion)
-    e.respondWith(fetch(r).then(res => { const cp = res.clone(); caches.open(VERSION).then(c => c.put('index.html', cp)); return res; })
-      .catch(() => caches.match('index.html')));
+    const key = /\/gestion(\.html)?\/?$/.test(new URL(r.url).pathname) ? 'gestion.html' : 'index.html';
+    e.respondWith(fetch(r).then(res => { const cp = res.clone(); caches.open(VERSION).then(c => c.put(key, cp)); return res; })
+      .catch(() => caches.match(key).then(m => m || caches.match('index.html'))));
     return;
   }
   e.respondWith(caches.match(r).then(m => m || fetch(r).then(res => { const cp = res.clone(); caches.open(VERSION).then(c => c.put(r, cp)); return res; })));
