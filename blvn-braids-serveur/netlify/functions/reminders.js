@@ -1,6 +1,7 @@
-/* Rappels 24 h et 2 h avant, par e-mail. Lancé automatiquement toutes les 15 minutes (voir netlify.toml). */
+/* Rappels aux clientes 24 h et 2 h avant, par e-mail ; rappels à la gérante sur son téléphone ; vérification des paiements. Lancé automatiquement toutes les 15 minutes (voir netlify.toml). */
 const L = require('./_lib');
 exports.handler = async () => {
+  try { const ar = await L.adminReminders(await L.settings()); if (ar.before || ar.morning) console.log('rappels gérante', ar); } catch (e) { console.error('rappels gérante', e); }
   try { const rc = await L.reconcile(); if (rc.confirmed || rc.abandoned) console.log('reconcile', rc); } catch (e) { console.error('reconcile', e); }
   try {
     const due = await L.q(`SELECT b.*, r.id AS reminder_id, r.lead_minutes FROM reminders r JOIN bookings b ON b.id = r.booking_id

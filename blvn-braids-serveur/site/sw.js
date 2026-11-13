@@ -1,6 +1,6 @@
 /* Service worker : permet d’installer le site et de l’ouvrir sans connexion.
    À CHAQUE MISE EN LIGNE, changez le numéro de VERSION ci-dessous pour que les visiteuses reçoivent la nouvelle version. */
-const VERSION = 'blvn-v29';
+const VERSION = 'blvn-v30';
 const SHELL = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "favicon-48.png"];
 
 self.addEventListener('install', e => {

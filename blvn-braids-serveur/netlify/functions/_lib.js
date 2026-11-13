@@ -38,6 +38,7 @@ async function settings() {
     depositFixed: dep.type === 'fixed' ? dep.amount_cents : null,
     holdMinutes: +(s.hold_minutes ?? 30),
     margins: { slot_step_min: 30, buffer_min: 30, min_notice_hours: 24, max_days_ahead: 60, ...(s.schedule_margins || {}) },
+    adminReminder: { lead_minutes: 60, morning: true, ...(s.admin_reminder || {}) },
     travelFees: s.travel_fees || {},
     contact: s.contact || {},
   };
@@ -205,7 +206,7 @@ const PROMO_MIN = 3500;          // le prix du modèle (hors suppléments) doit 
 const PROMO_AMOUNT = 500;        // 5 €
 const LOYALTY_EVERY = 4;         // 4 rendez-vous terminés = un code pour le 5e
 const PROMO_RULE = 'Valable une seule fois, sur une prestation de plus de 35 € (prix du modèle, hors suppléments), non cumulable.';
-const genCode = prefix => prefix + '-' + Array.from(crypto.randomBytes(4)).map(x => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[x % 32]).join('');
+const genCode = prefix => prefix + '-' + Array.from(crypto.randomBytes(7)).map(x => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[x % 32]).join('');
 const normCode = c => String(c || '').trim().toUpperCase().replace(/\s+/g, '');
 const digits = s => String(s || '').replace(/\D/g, '').slice(-9);
 async function basePriceOf(variantId) { const r = await q('SELECT base_price_cents FROM service_variants WHERE id=$1', [variantId]); return r.rows[0] ? r.rows[0].base_price_cents : null; }
@@ -360,6 +361,55 @@ async function sameClientAt(start, end, email, phone) {
   return r.rows[0] || null;
 }
 
+
+/* ---------- Agenda et rappels de la gérante ---------- */
+const icalToken = () => crypto.createHmac('sha256', process.env.QUOTE_SECRET || ENV.adminToken || 'blvn').update('ical-feed').digest('hex').slice(0, 40);
+const icalUrl = () => `${ENV.site}/api/calendar?k=${icalToken()}`;
+/* Rappels sur le téléphone de la gérante : avant chaque rendez-vous, et récap du matin */
+async function adminReminders(set) {
+  const out = { before: 0, morning: false }, cfg = set.adminReminder || {}, lead = Math.round(+cfg.lead_minutes || 0);
+  if (lead > 0) {
+    const due = await q(`UPDATE bookings SET snapshot = COALESCE(snapshot,'{}'::jsonb) || '{"adminReminded":true}'::jsonb
+      WHERE status='confirmed' AND starts_at > now() AND starts_at <= now() + make_interval(mins => $1::int) AND COALESCE(snapshot->>'adminReminded','') = '' RETURNING *`, [lead]);
+    for (const b of due.rows) {
+      const mins = Math.max(1, Math.round((new Date(b.starts_at).getTime() - Date.now()) / 60000)), hm = new Intl.DateTimeFormat('fr-FR', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(b.starts_at));
+      await notify(`⏰ Rendez-vous dans ${mins >= 60 ? dur(Math.round(mins / 5) * 5) : mins + ' min'}`, `${b.client_name || 'Cliente'} · ${(b.snapshot || {}).label || ''} · ${hm} · ${b.at_home ? 'à domicile' : 'chez vous'} · reste ${eur(b.balance_cents)}`, '/gestion?tab=plan');
+      out.before++;
+    }
+  }
+  if (cfg.morning !== false) {   // un seul récap par jour, entre 8 h et 9 h (heure de Paris)
+    const now = new Date(), hour = +new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', hour12: false }).format(now), ymd = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(now);
+    if (hour === 8) {
+      const first = await q(`INSERT INTO public_settings (key, value) VALUES ('admin_morning_last', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value WHERE public_settings.value IS DISTINCT FROM EXCLUDED.value RETURNING key`, [JSON.stringify(ymd)]);
+      if (first.rows[0]) {
+        const day = await q("SELECT starts_at, client_name, snapshot->>'label' AS label FROM bookings WHERE status='confirmed' AND starts_at >= $1 AND starts_at < $2 ORDER BY starts_at", [parisDate(ymd, '00:00'), new Date(parisDate(ymd, '23:59').getTime() + 60000)]);
+        const hm = x => new Intl.DateTimeFormat('fr-FR', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(x));
+        if (day.rows.length) { await notify(`Aujourd’hui : ${day.rows.length} rendez-vous`, day.rows.map(r => `${hm(r.starts_at)} ${r.client_name || ''}`).join(' · ').slice(0, 180), '/gestion?tab=plan'); out.morning = true; }
+      }
+    }
+  }
+  return out;
+}
+/* Agenda au format iCalendar : s’abonne une fois dans l’appli Calendrier, se met à jour tout seul */
+async function icalFeed(set) {
+  const lead = Math.round(+(set.adminReminder || {}).lead_minutes || 0);
+  const rows = (await q("SELECT * FROM bookings WHERE status IN ('confirmed','completed') AND starts_at > now() - interval '30 days' ORDER BY starts_at LIMIT 500")).rows;
+  const z = d => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const tx = s => String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/([,;])/g, '\\$1');
+  const fold = line => { const out = []; let s = line; while (Buffer.byteLength(s) > 73) { let n = 73; while (Buffer.byteLength(s.slice(0, n)) > 73) n--; out.push(s.slice(0, n)); s = ' ' + s.slice(n); } out.push(s); return out.join('\r\n'); };
+  const L_ = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Blvn Braids//Gestion//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Blvn Braids · Rendez-vous', 'X-WR-TIMEZONE:Europe/Paris', 'REFRESH-INTERVAL;VALUE=DURATION:PT15M', 'X-PUBLISHED-TTL:PT15M'];
+  for (const b of rows) {
+    const sn = b.snapshot || {}, start = new Date(b.starts_at), end = new Date(start.getTime() + (b.duration_min || 60) * 60000);
+    const where = b.at_home ? ((a => a ? [a.line1 || a.address, a.postcode, a.city].filter(Boolean).join(' ') : 'À domicile')(b.intervention_address) || 'À domicile') : 'Chez moi';
+    const desc = [`Cliente : ${b.client_name || ''}`, `Téléphone : ${b.contact_phone || ''}`, `E-mail : ${b.contact_email || ''}`, `Prestation : ${sn.label || ''}`, ...(sn.summary || []), `Total : ${eur(b.total_cents)} · acompte payé : ${eur(b.deposit_cents)} · reste : ${eur(b.balance_cents)}`, b.client_note ? `Mot de la cliente : ${b.client_note}` : ''].filter(Boolean).join('\n');
+    L_.push('BEGIN:VEVENT', `UID:${b.id}@blvnbraids.com`, `DTSTAMP:${z(new Date())}`, `DTSTART:${z(start)}`, `DTEND:${z(end)}`, `SUMMARY:${tx(`${b.client_name || 'Cliente'} · ${sn.label || 'Rendez-vous'}`)}`, `LOCATION:${tx(where)}`, `DESCRIPTION:${tx(desc)}`, 'STATUS:CONFIRMED');
+    if (lead > 0 && b.status === 'confirmed') L_.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${tx(`Rendez-vous : ${b.client_name || ''}`)}`, `TRIGGER:-PT${lead}M`, 'END:VALARM');
+    L_.push('END:VEVENT');
+  }
+  L_.push('END:VCALENDAR');
+  return L_.map(fold).join('\r\n') + '\r\n';
+}
+
 /* ---------- Annulation (par la gérante ou par la cliente) ---------- */
 const cancelToken = id => crypto.createHmac('sha256', process.env.QUOTE_SECRET || ENV.adminToken || 'blvn').update('cancel:' + id).digest('hex').slice(0, 32);
 const cancelLink = id => `${ENV.site}/api/cancel?b=${encodeURIComponent(id)}&t=${cancelToken(id)}`;
@@ -476,14 +526,32 @@ const ensureSite = () => (siteReady ||= q(`
     created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now() + interval '6 months',
     used_at timestamptz, used_booking_id uuid, source_booking_id uuid);
   CREATE INDEX IF NOT EXISTS promo_codes_owner ON promo_codes (lower(owner_email));
+  CREATE TABLE IF NOT EXISTS rate_hits (bucket text NOT NULL, at timestamptz NOT NULL DEFAULT now());
+  CREATE INDEX IF NOT EXISTS rate_hits_idx ON rate_hits (bucket, at);
   CREATE TABLE IF NOT EXISTS site_feedback (
     key text PRIMARY KEY, rating smallint NOT NULL CHECK (rating BETWEEN 1 AND 4), issues jsonb NOT NULL DEFAULT '[]'::jsonb, comment text,
     stage text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE IF NOT EXISTS push_keys (id integer PRIMARY KEY, public_key text NOT NULL, private_key text NOT NULL);
   CREATE TABLE IF NOT EXISTS push_subs (endpoint text PRIMARY KEY, sub jsonb NOT NULL, label text, created_at timestamptz NOT NULL DEFAULT now());
+  ALTER TABLE site_gallery ENABLE ROW LEVEL SECURITY; ALTER TABLE site_reviews ENABLE ROW LEVEL SECURITY; ALTER TABLE site_variant_photos ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE promo_codes ENABLE ROW LEVEL SECURITY; ALTER TABLE push_keys ENABLE ROW LEVEL SECURITY; ALTER TABLE push_subs ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE site_feedback ENABLE ROW LEVEL SECURITY; ALTER TABLE rate_hits ENABLE ROW LEVEL SECURITY;
 `).catch(e => { siteReady = null; throw e; }));
 const parseImage = dataUrl => { const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl || ''); return m && m[2].length <= 3000000 ? { mime: m[1], data: m[2] } : null; };
 
-const isAdmin = ev => ENV.adminToken && (ev.headers['x-admin-token'] === ENV.adminToken || ev.headers['X-Admin-Token'] === ENV.adminToken);
+/* Comparaison à temps constant : on ne peut pas deviner le mot de passe caractère par caractère */
+const sameSecret = (a, b) => { const x = crypto.createHash('sha256').update(String(a || '')).digest(), y = crypto.createHash('sha256').update(String(b || '')).digest(); return crypto.timingSafeEqual(x, y); };
+const isAdmin = ev => !!ENV.adminToken && sameSecret(ev.headers['x-admin-token'] || ev.headers['X-Admin-Token'] || '', ENV.adminToken);
+const clientIp = ev => String((ev.headers || {})['x-nf-client-connection-ip'] || ((ev.headers || {})['x-forwarded-for'] || '').split(',')[0] || 'inconnue').trim().slice(0, 60);
+/* Limiteur simple : true si ce « seau » a dépassé max essais sur la période */
+async function tooMany(bucket, max, minutes, record = true) {
+  try { await ensureSite();
+    const n = (await q('SELECT count(*)::int AS n FROM rate_hits WHERE bucket=$1 AND at > now() - make_interval(mins => $2::int)', [bucket, minutes])).rows[0].n;
+    if (n >= max) return true;
+    if (record) await q('INSERT INTO rate_hits (bucket) VALUES ($1)', [bucket]);
+    if (Math.random() < 0.02) await q("DELETE FROM rate_hits WHERE at < now() - interval '2 days'").catch(() => {});
+    return false;
+  } catch (e) { console.error('rate', e); return false; }   // en cas de souci technique, on ne bloque pas le site
+}
 
-module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, notify, vapid, confirmBooking, abandonBooking, reconcile, sameClientAt, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };
+module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, clientIp, tooMany, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, notify, vapid, confirmBooking, abandonBooking, reconcile, sameClientAt, icalToken, icalUrl, icalFeed, adminReminders, sameSecret, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };

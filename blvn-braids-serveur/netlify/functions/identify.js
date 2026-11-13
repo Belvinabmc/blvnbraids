@@ -29,6 +29,7 @@ async function askClaude(mime, data, prompt) {
 }
 exports.handler = async ev => {
   if (ev.httpMethod !== 'POST') return L.bad('Méthode non autorisée', 405);
+  if (await L.tooMany('identify:' + L.clientIp(ev), 12, 10)) return L.bad('Trop d’envois en peu de temps. Réessayez dans quelques minutes.', 429);
   if (!useCF() && !process.env.ANTHROPIC_API_KEY) return L.json(200, { unavailable: true });
   let b; try { b = JSON.parse(ev.body || '{}'); } catch { return L.bad('Requête illisible'); }
   const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(b.image || '');

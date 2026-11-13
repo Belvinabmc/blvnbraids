@@ -3,6 +3,7 @@ const L = require('./_lib');
 exports.handler = async ev => {
   if (ev.httpMethod !== 'POST') return L.bad('Méthode non autorisée', 405);
   let b; try { b = JSON.parse(ev.body || '{}'); } catch { return L.bad('Requête illisible'); }
+  if (await L.tooMany('promo:' + L.clientIp(ev), 12, 10)) return L.json(200, { ok: false, error: 'Trop d’essais de codes. Réessayez dans quelques minutes.' });
   try {
     const base = b.variantId ? await L.basePriceOf(b.variantId) : null;
     const r = await L.checkPromo({ code: b.code, email: b.email, phone: b.phone, basePrice: base });

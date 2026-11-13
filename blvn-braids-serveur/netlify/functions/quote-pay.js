@@ -46,7 +46,7 @@ exports.handler = async ev => {
       throw e;
     }
     const sess = await L.stripe('/checkout/sessions', {
-      mode: 'payment', locale: 'fr', payment_method_types: { 0: 'card' }, customer_email: rq.contact_email, client_reference_id: bk.id,
+      mode: 'payment', locale: 'fr', customer_email: rq.contact_email, client_reference_id: bk.id,
       success_url: L.ENV.site + '/?paid={CHECKOUT_SESSION_ID}', cancel_url: L.ENV.site + '/?cancelled=' + bk.id,
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,
       metadata: { booking_id: bk.id },
@@ -55,5 +55,15 @@ exports.handler = async ev => {
     });
     await L.q("UPDATE bookings SET checkout_ref=$2, hold_expires_at = now() + interval '33 minutes' WHERE id=$1", [bk.id, sess.id]);
     return go(sess.url);
-  } catch (e) { console.error(e); return page('Un souci technique', 'Le paiement n’a pas pu être préparé. Réessayez dans un instant, ou répondez à l’e-mail reçu.'); }
+  } catch (e) {
+    /* On ne laisse jamais la cliente sans explication, et la gérante reçoit la cause exacte pour pouvoir agir */
+    console.error('quote-pay', e);
+    const detail = String((e && e.message) || e).slice(0, 300), ref = L.crypto.createHash('sha1').update(detail).digest('hex').slice(0, 6).toUpperCase();
+    try {
+      await L.notify('Lien de paiement en échec', `Une cliente n’a pas pu payer son acompte (réf. ${ref}). Ouvrez vos e-mails pour le détail.`, '/gestion?tab=todo');
+      if (L.ENV.adminEmail) await L.sendMail({ to: L.ENV.adminEmail, subject: `Lien de paiement en échec (réf. ${ref})`,
+        html: L.layout('Un lien de paiement n’a pas fonctionné', `<p>Une cliente a cliqué sur « Payer l’acompte et réserver » et le paiement n’a pas pu être préparé.</p>${L.rowsHtml([['Demande', String(r)], ['Référence', ref], ['Cause technique', detail]])}<p>Transmettez ce message à votre développeur. En attendant, vous pouvez prendre le rendez-vous directement avec la cliente.</p>`), text: `Lien de paiement en échec. Demande ${r}. Cause : ${detail}` });
+    } catch (_) {}
+    return page('Un souci technique', `Le paiement n’a pas pu être préparé, et <b>rien n’a été débité</b>. La coiffeuse vient d’être prévenue automatiquement.</p><p>Vous pouvez réessayer dans quelques minutes, répondre à l’e-mail reçu, ou nous écrire sur Instagram.</p><p style="font-size:12px;color:#777">Référence : ${ref}`);
+  }
 };

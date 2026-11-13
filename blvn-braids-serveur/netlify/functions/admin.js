@@ -1,7 +1,12 @@
 /* Administration : protégée par un mot de passe (ADMIN_TOKEN). Lecture des rendez-vous et des demandes, réponses, annulations, horaires, durées. */
 const L = require('./_lib');
 exports.handler = async ev => {
-  if (!L.isAdmin(ev)) return L.bad('Accès refusé', 401);
+  /* Protection contre les essais de mot de passe en série : 10 erreurs en 15 min depuis la même connexion = blocage temporaire */
+  const ip = L.clientIp(ev);
+  if (!L.isAdmin(ev)) {
+    if (await L.tooMany('admin-fail:' + ip, 10, 15)) return L.bad('Trop d’essais. Réessayez dans 15 minutes.', 429);
+    return L.bad('Accès refusé', 401);
+  }
   try {
     await L.ensureSite();
     if (ev.httpMethod === 'GET') {
@@ -20,7 +25,7 @@ exports.handler = async ev => {
         L.q('SELECT code, kind, owner_email, owner_name, amount_cents, created_at, expires_at, used_at FROM promo_codes ORDER BY created_at DESC LIMIT 150'),
         L.q('SELECT key, rating, issues, comment, stage, created_at FROM site_feedback ORDER BY created_at DESC LIMIT 300'),
       ]);
-      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, feedback: fbk.rows, notice: set0.margins.min_notice_hours, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp, groups: (s.groups || []).map(g => ({ id: g.id, l: g.l, kind: g.kind, price: g.price, unit: g.unit, hidden: g.hidden, items: (g.items || []).map(o => ({ id: o.id, l: o.l, p: o.p, d: o.d, unit: o.unit, hidden: o.hidden })) })) })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
+      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, feedback: fbk.rows, ical: L.icalUrl(), reminder: set0.adminReminder, notice: set0.margins.min_notice_hours, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp, groups: (s.groups || []).map(g => ({ id: g.id, l: g.l, kind: g.kind, price: g.price, unit: g.unit, hidden: g.hidden, items: (g.items || []).map(o => ({ id: o.id, l: o.l, p: o.p, d: o.d, unit: o.unit, hidden: o.hidden })) })) })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
     }
     const b = JSON.parse(ev.body || '{}');
     if (b.action === 'cancel') {
@@ -88,6 +93,11 @@ exports.handler = async ev => {
       return L.json(200, { ok: true });
     }
     if (b.action === 'feedback_delete') { await L.q('DELETE FROM site_feedback WHERE key=$1', [String(b.key || '')]); return L.json(200, { ok: true }); }
+    if (b.action === 'admin_reminder') {   // rappels de la gérante : délai avant chaque rendez-vous et récap du matin
+      const lead = Math.round(+b.lead); if (!(lead >= 0 && lead <= 1440)) return L.bad('Délai invalide');
+      await L.q(`INSERT INTO public_settings (key, value) VALUES ('admin_reminder', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = $1::jsonb`, [JSON.stringify({ lead_minutes: lead, morning: !!b.morning })]);
+      return L.json(200, { ok: true });
+    }
     if (b.action === 'notice') {   // délai minimum entre la réservation et le rendez-vous
       const h = Math.round(+b.hours); if (!(h >= 0 && h <= 168)) return L.bad('Délai invalide');
       await L.q(`INSERT INTO public_settings (key, value) VALUES ('schedule_margins', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = COALESCE(public_settings.value, '{}'::jsonb) || $1::jsonb`, [JSON.stringify({ min_notice_hours: h })]);

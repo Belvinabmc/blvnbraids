@@ -4,6 +4,7 @@ const email = s => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s || '');
 const phone = s => /^\+?[0-9 .()-]{9,18}$/.test(s || '');
 exports.handler = async ev => {
   if (ev.httpMethod !== 'POST') return L.bad('Méthode non autorisée', 405);
+  if (await L.tooMany('photo:' + L.clientIp(ev), 6, 30)) return L.bad('Trop d’envois en peu de temps. Réessayez dans quelques minutes.', 429);
   let b; try { b = JSON.parse(ev.body || '{}'); } catch { return L.bad('Requête illisible'); }
   const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(b.image || '');
   if (!m) return L.bad('Photo manquante');

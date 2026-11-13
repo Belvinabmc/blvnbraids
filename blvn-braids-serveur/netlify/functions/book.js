@@ -72,14 +72,24 @@ exports.handler = async ev => {
       } catch (e) { if (/bookings_no_overlap/.test(e.message)) return L.bad('Ce créneau vient d’être pris. Choisissez-en un autre.', 409); throw e; }
     }
     if (booking.checkout_ref && booking.status === 'held') { const sess = await L.stripe('/checkout/sessions/' + booking.checkout_ref, null, 'GET'); if (sess.url) return L.json(200, { kind: 'pay', url: sess.url }); }
-    const sess = await L.stripe('/checkout/sessions', {
-      mode: 'payment', locale: 'fr', payment_method_types: { 0: 'card' }, customer_email: contact.email.trim(), client_reference_id: booking.id,
+    let sess;
+    try { sess = await L.stripe('/checkout/sessions', {
+      mode: 'payment', locale: 'fr', customer_email: contact.email.trim(), client_reference_id: booking.id,
       success_url: L.ENV.site + '/?paid={CHECKOUT_SESSION_ID}', cancel_url: L.ENV.site + '/?cancelled=' + booking.id,
       expires_at: Math.floor(Date.now() / 1000) + 31 * 60,   // Stripe impose au moins 30 min
       metadata: { booking_id: booking.id },
       payment_intent_data: { description: `Acompte Blvn Braids · ${label}`, metadata: { booking_id: booking.id } },
       line_items: { 0: { quantity: 1, price_data: { currency: 'eur', unit_amount: p.deposit, product_data: { name: 'Acompte · ' + label, description: `Rendez-vous ${L.fmtWhen(startsAt)} · total ${L.eur(p.total)}, reste ${L.eur(p.total - p.deposit)} sur place` } } } },
-    });
+    }); }
+    catch (e) {   // le paiement n’a pas pu être préparé : on ne garde surtout pas le créneau bloqué
+      console.error('stripe session', e);
+      const detail = String((e && e.message) || e).slice(0, 300);
+      await L.q(`UPDATE bookings SET status='expired', snapshot = COALESCE(snapshot,'{}'::jsonb) || '{"reconciled":true,"abandoned":true,"paymentError":true}'::jsonb WHERE id=$1 AND status='held'`, [booking.id]).catch(() => {});
+      await L.notify('Paiement impossible à préparer', `${contact.name.trim()} · ${label} · ${L.fmtWhen(startsAt)} · ${contact.phone.trim()}`, '/gestion?tab=plan');
+      if (L.ENV.adminEmail) await L.sendMail({ to: L.ENV.adminEmail, subject: 'Une cliente n’a pas pu accéder au paiement',
+        html: L.layout('Paiement impossible à préparer', L.rowsHtml([['Cliente', contact.name.trim()], ['Prestation', label], ['Créneau', L.fmtWhen(startsAt)], ['E-mail', contact.email.trim()], ['Téléphone', contact.phone.trim()], ['Cause technique', detail]]) + '<p>La page de paiement n’a pas pu s’ouvrir. Rien n’a été débité et le créneau a été libéré. Recontactez la cliente, et transmettez la cause technique à votre développeur.</p>'), text: `${contact.name} · ${label} · ${detail}` }).catch(() => {});
+      return L.json(502, { code: 'payment_unavailable', error: 'La page de paiement n’a pas pu s’ouvrir : votre réservation n’est pas enregistrée et rien n’a été débité. La coiffeuse vient d’être prévenue. Réessayez dans quelques minutes ou écrivez-nous sur Instagram.' });
+    }
     await L.q("UPDATE bookings SET checkout_ref=$2, hold_expires_at = now() + interval '33 minutes' WHERE id=$1", [booking.id, sess.id]);
     return L.json(200, { kind: 'pay', url: sess.url, deposit: p.deposit, total: p.total });
   } catch (e) { console.error(e); return L.bad('Réservation impossible pour le moment', 500); }
