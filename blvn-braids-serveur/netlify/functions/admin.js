@@ -10,7 +10,7 @@ exports.handler = async ev => {
       if (qm) { try { return L.json(200, await L.monthCalendar(qm, await L.settings(), null, true)); } catch (e) { if (/Mois/.test(e.message)) return L.bad('Mois invalide'); throw e; } }
       await L.reconcile().catch(e => console.error(e));   // un paiement réussi est toujours confirmé, même si Stripe n’a pas pu nous prévenir
       const set0 = await L.settings();
-      const [bk, rq, wh, cat, gal, rev, promos] = await Promise.all([
+      const [bk, rq, wh, cat, gal, rev, promos, fbk] = await Promise.all([
         L.q("SELECT id, variant_id, status, hold_expires_at, starts_at, ends_at, duration_min, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, created_at FROM bookings WHERE starts_at > now() - interval '7 days' AND (status IN ('held','confirmed','completed','cancelled') OR (status='expired' AND snapshot->>'abandoned' = 'true' AND created_at > now() - interval '4 days')) ORDER BY starts_at"),
         L.q("SELECT id, status, client_name, contact_email, contact_phone, description, answers, ai_suggestion, desired_location, desired_starts_at, admin_price_cents, admin_duration_min, admin_message, answered_at, created_at FROM requests WHERE created_at > now() - interval '60 days' ORDER BY created_at DESC"),
         L.q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY weekday, starts_at'),
@@ -18,8 +18,9 @@ exports.handler = async ev => {
         L.q('SELECT id, title, category, description, created_at FROM site_gallery ORDER BY sort_order, created_at DESC'),
         L.q('SELECT id, author, rating, comment, admin_reply, status, source, created_at FROM site_reviews ORDER BY created_at DESC'),
         L.q('SELECT code, kind, owner_email, owner_name, amount_cents, created_at, expires_at, used_at FROM promo_codes ORDER BY created_at DESC LIMIT 150'),
+        L.q('SELECT key, rating, issues, comment, stage, created_at FROM site_feedback ORDER BY created_at DESC LIMIT 300'),
       ]);
-      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, notice: set0.margins.min_notice_hours, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp, groups: (s.groups || []).map(g => ({ id: g.id, l: g.l, kind: g.kind, price: g.price, unit: g.unit, hidden: g.hidden, items: (g.items || []).map(o => ({ id: o.id, l: o.l, p: o.p, d: o.d, unit: o.unit, hidden: o.hidden })) })) })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
+      return L.json(200, { bookings: bk.rows.map(b => ({ ...b, when: L.fmtWhen(new Date(b.starts_at)) })), requests: rq.rows.map(r => ({ ...r, when: r.desired_starts_at ? L.fmtWhen(new Date(r.desired_starts_at)) : null })), hours: wh.rows, gallery: gal.rows, reviews: rev.rows, promos: promos.rows, feedback: fbk.rows, notice: set0.margins.min_notice_hours, services: cat.services.map(s => ({ id: s.id, name: s.name, cat: s.cat, visible: s.visible, sizeSupp: s.sizeSupp, lengthSupp: s.lengthSupp, groups: (s.groups || []).map(g => ({ id: g.id, l: g.l, kind: g.kind, price: g.price, unit: g.unit, hidden: g.hidden, items: (g.items || []).map(o => ({ id: o.id, l: o.l, p: o.p, d: o.d, unit: o.unit, hidden: o.hidden })) })) })), categories: cat.categories, variants: cat.services.flatMap(s => s.variants.map(v => ({ id: v.id, serviceId: s.id, service: s.name, group: v.g, label: v.l, price: v.p, duration: v.d, refSize: v.refSize, refLen: v.refLen, askSize: v.askSize, askLen: v.askLen, hidden: v.hidden, photo: v.photo }))) });
     }
     const b = JSON.parse(ev.body || '{}');
     if (b.action === 'cancel') {
@@ -86,6 +87,7 @@ exports.handler = async ev => {
       for (const h of b.hours || []) if (h.weekday >= 1 && h.weekday <= 7 && /^\d\d:\d\d$/.test(h.starts) && /^\d\d:\d\d$/.test(h.ends) && h.ends > h.starts) await L.q('INSERT INTO working_hours (weekday, starts_at, ends_at) VALUES ($1,$2,$3)', [h.weekday, h.starts, h.ends]);
       return L.json(200, { ok: true });
     }
+    if (b.action === 'feedback_delete') { await L.q('DELETE FROM site_feedback WHERE key=$1', [String(b.key || '')]); return L.json(200, { ok: true }); }
     if (b.action === 'notice') {   // délai minimum entre la réservation et le rendez-vous
       const h = Math.round(+b.hours); if (!(h >= 0 && h <= 168)) return L.bad('Délai invalide');
       await L.q(`INSERT INTO public_settings (key, value) VALUES ('schedule_margins', $1::jsonb) ON CONFLICT (key) DO UPDATE SET value = COALESCE(public_settings.value, '{}'::jsonb) || $1::jsonb`, [JSON.stringify({ min_notice_hours: h })]);

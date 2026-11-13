@@ -6,6 +6,16 @@ exports.handler = async ev => {
     if (ev.httpMethod === 'POST') {
       let b; try { b = JSON.parse(ev.body || '{}'); } catch { return L.bad('Requête illisible'); }
       if (b.website) return L.json(200, { ok: true });   // piège à robots
+      if (b.kind === 'feedback') {   // mini-questionnaire après la réservation : anonyme, 1 à 3 touchers
+        const n = Math.round(+b.rating), key = String(b.key || ''), ISSUES = ['modele', 'prix', 'date', 'paiement', 'autre'];
+        if (!(n >= 1 && n <= 4) || !/^[a-z0-9]{8,40}$/i.test(key)) return L.bad('Réponse invalide');
+        const issues = (Array.isArray(b.issues) ? b.issues : []).filter(x => ISSUES.includes(x)).slice(0, 5), comment = String(b.comment || '').trim().slice(0, 500) || null;
+        const recent = await L.q("SELECT count(*)::int AS n FROM site_feedback WHERE created_at > now() - interval '1 hour'");
+        if (recent.rows[0].n >= 80) return L.json(200, { ok: true });
+        await L.q(`INSERT INTO site_feedback (key, rating, issues, comment, stage) VALUES ($1,$2,$3,$4,$5)
+          ON CONFLICT (key) DO UPDATE SET rating=EXCLUDED.rating, issues=EXCLUDED.issues, comment=EXCLUDED.comment, updated_at=now()`, [key, n, JSON.stringify(issues), comment, b.stage === 'request' ? 'request' : 'booking']);
+        return L.json(200, { ok: true });
+      }
       const author = String(b.author || '').trim().slice(0, 60), comment = String(b.comment || '').trim().slice(0, 600), n = Math.round(+b.rating);
       if (author.length < 2 || comment.length < 5 || !(n >= 1 && n <= 5)) return L.bad('Indiquez votre prénom, une note et un commentaire');
       const recent = await L.q("SELECT count(*)::int AS n FROM site_reviews WHERE source='client' AND created_at > now() - interval '1 hour'");

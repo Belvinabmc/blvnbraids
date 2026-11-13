@@ -476,6 +476,9 @@ const ensureSite = () => (siteReady ||= q(`
     created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now() + interval '6 months',
     used_at timestamptz, used_booking_id uuid, source_booking_id uuid);
   CREATE INDEX IF NOT EXISTS promo_codes_owner ON promo_codes (lower(owner_email));
+  CREATE TABLE IF NOT EXISTS site_feedback (
+    key text PRIMARY KEY, rating smallint NOT NULL CHECK (rating BETWEEN 1 AND 4), issues jsonb NOT NULL DEFAULT '[]'::jsonb, comment text,
+    stage text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE IF NOT EXISTS push_keys (id integer PRIMARY KEY, public_key text NOT NULL, private_key text NOT NULL);
   CREATE TABLE IF NOT EXISTS push_subs (endpoint text PRIMARY KEY, sub jsonb NOT NULL, label text, created_at timestamptz NOT NULL DEFAULT now());
 `).catch(e => { siteReady = null; throw e; }));
