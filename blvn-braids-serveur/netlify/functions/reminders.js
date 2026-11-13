@@ -1,6 +1,7 @@
 /* Rappels 24 h et 2 h avant, par e-mail. Lancé automatiquement toutes les 15 minutes (voir netlify.toml). */
 const L = require('./_lib');
 exports.handler = async () => {
+  try { const rc = await L.reconcile(); if (rc.confirmed || rc.abandoned) console.log('reconcile', rc); } catch (e) { console.error('reconcile', e); }
   try {
     const due = await L.q(`SELECT b.*, r.id AS reminder_id, r.lead_minutes FROM reminders r JOIN bookings b ON b.id = r.booking_id
       WHERE r.status='scheduled' AND r.send_at <= now() AND r.send_at > now() - interval '6 hours' AND b.status='confirmed' ORDER BY r.send_at LIMIT 50`);

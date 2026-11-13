@@ -10,7 +10,7 @@ exports.handler = async ev => {
       const n = Math.max(1, Math.min(62, +p.days || 21)), start = new Date(p.from + 'T12:00:00Z'), want = [];
       for (let i = 0; i < n; i++) want.push(new Date(start.getTime() + i * 86400000).toISOString().slice(0, 10));
       const months = [...new Set(want.map(x => x.slice(0, 7)))], all = [];
-      for (const ym of months) all.push(...(await L.monthCalendar(ym, set, d || 180)).days);
+      for (const ym of months) all.push(...(await L.monthCalendar(ym, set, d || null)).days);
       return L.json(200, { days: want.map(date => ({ date, open: (all.find(x => x.date === date) || {}).status === 'free' })) }, { 'cache-control': 'no-store' });
     }
     return L.json(200, await L.availability(p.date || '', d, set));

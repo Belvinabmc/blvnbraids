@@ -161,37 +161,44 @@ async function availability(ymd, durationMin, set) {
 }
 
 /* Calendrier du mois pour la gérante : état de chaque jour (libre, complet, bloqué, fermé, passé) */
-async function monthCalendar(ym, set, durationMin = 180) {
+async function monthCalendar(ym, set, durationMin = null, detail = false) {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(ym)) throw new Error('Mois invalide');
   const [Y, M] = ym.split('-').map(Number), n = new Date(Date.UTC(Y, M, 0)).getUTCDate(), pad = x => String(x).padStart(2, '0');
   const first = parisDate(`${ym}-01`, '00:00'), last = new Date(parisDate(`${ym}-${pad(n)}`, '23:59').getTime() + 60000);
   await q("UPDATE bookings SET status='expired' WHERE status='held' AND hold_expires_at < now()");
+  if (!durationMin) {   // sans modèle précis, on se base sur la prestation la plus courte : un jour est « libre » s’il reste au moins une place
+    const m0 = (await q('SELECT MIN(base_duration_min) AS d FROM service_variants WHERE is_visible AND base_duration_min IS NOT NULL').catch(() => ({ rows: [{}] }))).rows[0];
+    durationMin = Math.max(30, Math.min(180, (m0 && m0.d) || 60));
+  }
   const [hours, busy, off] = await Promise.all([
     q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY starts_at'),
-    q("SELECT starts_at, ends_at, status FROM bookings WHERE status IN ('held','confirmed') AND ends_at > $1 AND starts_at < $2", [first, last]),
+    q("SELECT id, starts_at, ends_at, status, client_name, hold_expires_at, snapshot->>'label' AS label FROM bookings WHERE status IN ('held','confirmed') AND ends_at > $1 AND starts_at < $2 ORDER BY starts_at", [first, last]),
     q('SELECT lower(during) AS a, upper(during) AS b FROM time_off WHERE during && tstzrange($1,$2)', [first, last]),
   ]);
   const m = set.margins, now = Date.now(), minStart = now + m.min_notice_hours * 3600000, need = durationMin + m.buffer_min;
   const WDS = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }, T = x => new Date(x).getTime(), days = [];
+  const hm = x => new Intl.DateTimeFormat('fr-FR', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).format(new Date(x));
   for (let d = 1; d <= n; d++) {
     const ymd = `${ym}-${pad(d)}`, ds = parisDate(ymd, '00:00').getTime(), de = parisDate(ymd, '23:59').getTime() + 60000;
     const WD = WDS[new Intl.DateTimeFormat('en-GB', { timeZone: TZ, weekday: 'short' }).format(new Date(ds + 43200000))];
     const hs = hours.rows.filter(h => h.weekday === WD);
-    const booked = busy.rows.filter(b => b.status === 'confirmed' && T(b.starts_at) < de && T(b.ends_at) > ds).length;
-    let status, free = 0;
+    const todays = busy.rows.filter(b => T(b.starts_at) < de && T(b.ends_at) > ds);
+    const booked = todays.filter(b => b.status === 'confirmed').length, held = todays.filter(b => b.status === 'held').length;
+    let status, free = 0, freeLate = 0;
     if (de <= now) status = 'past';
     else if (!hs.length) status = 'closed';
     else if (off.rows.some(o => T(o.a) < de && T(o.b) > ds)) status = 'blocked';
     else {
       for (const h of hs) { const open = parisDate(ymd, h.starts_at.slice(0, 5)).getTime(), close = parisDate(ymd, h.ends_at.slice(0, 5)).getTime();
-        for (let t = open; t + durationMin * 60000 <= close; t += m.slot_step_min * 60000) if (t >= minStart && !busy.rows.some(b => T(b.starts_at) < t + need * 60000 && T(b.ends_at) > t)) free++; }
-      status = free ? 'free' : 'full';
+        for (let t = open; t + durationMin * 60000 <= close; t += m.slot_step_min * 60000) { if (busy.rows.some(b => T(b.starts_at) < t + need * 60000 && T(b.ends_at) > t) || t < now) continue; if (t >= minStart) free++; else freeLate++; } }
+      status = free ? 'free' : freeLate ? 'late' : 'full';   // late = il reste de la place, mais le délai minimum de réservation est dépassé
     }
-    days.push({ date: ymd, weekday: WD, status, free, booked });
+    const day = { date: ymd, weekday: WD, status, free, booked, held };
+    if (detail) day.items = todays.map(b => ({ id: b.id, status: b.status, time: hm(b.starts_at), end: hm(b.ends_at), name: b.client_name || '', label: b.label || '', until: b.status === 'held' && b.hold_expires_at ? hm(b.hold_expires_at) : null }));
+    days.push(day);
   }
-  return { month: ym, days };
+  return { month: ym, days, notice: m.min_notice_hours, base: durationMin };
 }
-
 
 /* ---------- Codes promo à usage unique : fidélité et parrainage ---------- */
 const PROMO_MIN = 3500;          // le prix du modèle (hors suppléments) doit dépasser 35 €
@@ -282,6 +289,75 @@ async function notify(title, body, url = '/gestion') {
     await Promise.all(subs.map(s => wp.sendNotification(s.sub, JSON.stringify({ title, body, url }), { TTL: 86400, urgency: 'high' })
       .catch(e => { if (e.statusCode === 404 || e.statusCode === 410) return q('DELETE FROM push_subs WHERE endpoint=$1', [s.endpoint]); console.error('push', e.statusCode, e.body); })));
   } catch (e) { console.error('notify', e); }
+}
+
+
+/* ---------- Paiements : un seul chemin de confirmation, et un filet de sécurité ---------- */
+/* Confirme une réservation payée. Appelé par le webhook Stripe, par la page de retour et par la vérification automatique. */
+async function confirmBooking(id, sess) {
+  let r;
+  try { r = await q("UPDATE bookings SET status='confirmed', confirmed_at=now(), hold_expires_at=NULL WHERE id=$1 AND status IN ('held','expired') RETURNING *", [id]); }
+  catch (e) { if (/bookings_no_overlap/.test(e.message)) return paidButTaken(id, sess); throw e; }
+  const b = r.rows[0] || (await q('SELECT * FROM bookings WHERE id=$1', [id])).rows[0];
+  if (!b) return null;
+  await q("INSERT INTO payments (booking_id, provider, provider_ref, amount_cents, status, verified_at) VALUES ($1,'card',$2,$3,'succeeded',now()) ON CONFLICT (provider, provider_ref) DO NOTHING", [b.id, String((sess && (sess.payment_intent || sess.id)) || b.checkout_ref), (sess && sess.amount_total) || b.deposit_cents]).catch(e => console.error('payments', e));
+  for (const lead of [1440, 120]) await q("INSERT INTO reminders (booking_id, channel, lead_minutes, send_at) VALUES ($1,'email',$2, $3::timestamptz - make_interval(mins => $2::int)) ON CONFLICT DO NOTHING", [b.id, lead, b.starts_at]).catch(e => console.error('reminders', e));
+  if (r.rows[0]) {   // première confirmation : on prévient tout le monde, sans jamais bloquer la confirmation elle-même
+    await mailBookingConfirmed(b).catch(e => console.error('mail confirm', e));
+    await promoUsed(b).catch(() => {});
+    await notify('Acompte payé · rendez-vous confirmé', `${b.client_name || 'Une cliente'} · ${(b.snapshot || {}).label || ''} · ${fmtWhen(new Date(b.starts_at))} · acompte ${eur(b.deposit_cents)}`, '/gestion?tab=plan');
+    if (/^q:/.test(b.idempotency_key || '')) await q("UPDATE requests SET status='quote_accepted', updated_at=now() WHERE id=$1", [b.idempotency_key.slice(2)]).catch(() => {});
+  }
+  return b;
+}
+/* Cas rare : le paiement arrive alors que le créneau a été repris entre-temps → remboursement automatique et explications */
+async function paidButTaken(id, sess) {
+  const b = (await q('SELECT * FROM bookings WHERE id=$1', [id])).rows[0]; if (!b) return null;
+  if ((b.snapshot || {}).cancel) return b;
+  let refunded = false;
+  try { const pi = (sess && sess.payment_intent) || (await stripe('/checkout/sessions/' + b.checkout_ref, null, 'GET')).payment_intent; if (pi) { await stripe('/refunds', { payment_intent: pi, reason: 'requested_by_customer', metadata: { booking_id: b.id } }); refunded = true; } } catch (e) { console.error('refund taken', e); }
+  await q("UPDATE bookings SET status='cancelled', cancelled_at=now(), snapshot = COALESCE(snapshot,'{}'::jsonb) || jsonb_build_object('reconciled', true, 'cancel', jsonb_build_object('refunded', $2::boolean, 'amount', $3::int, 'at', now(), 'by', 'system', 'reason', 'slot_taken')) WHERE id=$1", [b.id, refunded, b.deposit_cents]);
+  const when = fmtWhen(new Date(b.starts_at)), dep = eur(b.deposit_cents);
+  await sendMail({ to: b.contact_email, subject: 'Votre réservation n’a pas pu être enregistrée',
+    html: layout('Créneau déjà repris', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Votre paiement est arrivé trop tard : le créneau du <b>${esc(when)}</b> venait d’être réservé par quelqu’un d’autre.</p><p>${refunded ? `<b>Votre acompte de ${dep} vous est remboursé intégralement</b> (visible sous 5 à 10 jours ouvrés).` : `Nous vous remboursons votre acompte de ${dep} très rapidement.`}</p><p>Vous pouvez choisir un autre créneau sur <a href="${ENV.site}" style="color:#1A1A1A">blvnbraids.com</a>, ou nous écrire sur Instagram @blvn_braids.</p><p>Toutes nos excuses pour ce contretemps.<br>Blvn Braids</p>`),
+    text: `Le créneau du ${when} venait d’être pris. ${refunded ? 'Votre acompte de ' + dep + ' est remboursé.' : ''}` }).catch(e => console.error(e));
+  await notify(refunded ? 'Paiement remboursé : créneau déjà pris' : 'À REMBOURSER : créneau déjà pris', `${b.client_name || ''} · ${when} · ${dep} · ${b.contact_phone || ''}`, '/gestion?tab=plan');
+  if (ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: refunded ? 'Paiement remboursé automatiquement (créneau déjà pris)' : 'À rembourser : paiement reçu sur un créneau déjà pris',
+    html: layout('Paiement sur un créneau déjà pris', rowsHtml([['Cliente', b.client_name || ''], ['Créneau', when], ['Acompte', dep + (refunded ? ' · remboursé automatiquement' : ' · À REMBOURSER dans Stripe')], ['E-mail', b.contact_email], ['Téléphone', b.contact_phone || '']])), text: `${b.client_name} · ${when} · ${dep}` }).catch(e => console.error(e));
+  return (await q('SELECT * FROM bookings WHERE id=$1', [id])).rows[0];
+}
+/* Paiement commencé mais jamais terminé : on libère le créneau et on prévient la cliente ET la gérante (une seule fois) */
+async function abandonBooking(id) {
+  const r = await q(`UPDATE bookings SET status = 'expired', snapshot = COALESCE(snapshot,'{}'::jsonb) || '{"reconciled":true,"abandoned":true}'::jsonb
+    WHERE id=$1 AND status IN ('held','expired') AND COALESCE(snapshot->>'abandoned','') = '' RETURNING *`, [id]);
+  const b = r.rows[0]; if (!b) return null;
+  const when = fmtWhen(new Date(b.starts_at)), label = (b.snapshot || {}).label || 'votre prestation';
+  await sendMail({ to: b.contact_email, subject: 'Votre réservation n’a pas été finalisée',
+    html: layout('Paiement non abouti', `<p>Bonjour ${esc(b.client_name || '')},</p><p>Votre réservation pour <b>${esc(label)}</b>, le <b>${esc(when)}</b>, n’a pas été finalisée : le paiement de l’acompte n’est pas allé jusqu’au bout.</p><p><b>Aucun montant n’a été débité</b> et le créneau a été libéré.</p><p>Pour réserver, recommencez sur <a href="${ENV.site}" style="color:#1A1A1A">blvnbraids.com</a>. Si un message d’erreur s’est affiché ou si vous avez un doute, répondez à cet e-mail ou écrivez-nous sur Instagram @blvn_braids : on vous aide.</p><p>Blvn Braids</p>`),
+    text: `Votre réservation du ${when} n’a pas été finalisée : aucun montant débité, créneau libéré. Recommencez sur ${ENV.site}.` }).catch(e => console.error(e));
+  await notify('Paiement non abouti', `${b.client_name || 'Une cliente'} · ${label} · ${when} · ${b.contact_phone || ''}`, '/gestion?tab=plan');
+  if (ENV.adminEmail) await sendMail({ to: ENV.adminEmail, subject: `Paiement non abouti · ${b.client_name || ''} · ${when}`,
+    html: layout('Une réservation n’a pas abouti', rowsHtml([['Cliente', b.client_name || ''], ['Prestation', label], ['Créneau souhaité', when], ['Acompte prévu', eur(b.deposit_cents)], ['E-mail', b.contact_email], ['Téléphone', b.contact_phone || '']]) + '<p>La cliente a commencé à payer puis n’a pas terminé. Aucun montant n’a été débité, le créneau est de nouveau libre. Elle a reçu un e-mail d’explication : vous pouvez la recontacter.</p>'),
+    text: `${b.client_name} · ${label} · ${when} : paiement non abouti.` }).catch(e => console.error(e));
+  return b;
+}
+/* Filet de sécurité : on interroge Stripe pour chaque paiement en attente. Un paiement réussi est toujours confirmé, même si Stripe n’a pas pu nous prévenir. */
+async function reconcile() {
+  const out = { confirmed: 0, abandoned: 0 };
+  let rows; try { rows = (await q("SELECT * FROM bookings WHERE checkout_ref IS NOT NULL AND status IN ('held','expired') AND created_at > now() - interval '48 hours' AND COALESCE(snapshot->>'reconciled','') = '' ORDER BY created_at DESC LIMIT 12")).rows; } catch (e) { console.error('reconcile', e); return out; }
+  for (const b of rows) {
+    try {
+      const sess = await stripe('/checkout/sessions/' + b.checkout_ref, null, 'GET');
+      if (sess.payment_status === 'paid') { const r = await confirmBooking(b.id, sess); if (r && r.status === 'confirmed') out.confirmed++; }
+      else if (sess.status === 'expired' || b.status === 'expired' || (b.hold_expires_at && new Date(b.hold_expires_at).getTime() < Date.now() - 120000)) { if (await abandonBooking(b.id)) out.abandoned++; }
+    } catch (e) { console.error('reconcile one', b.id, e.message); }
+  }
+  return out;
+}
+/* La même cliente a-t-elle déjà quelque chose sur ce créneau ? */
+async function sameClientAt(start, end, email, phone) {
+  const r = await q("SELECT * FROM bookings WHERE status IN ('held','confirmed') AND starts_at < $2 AND ends_at > $1 AND (lower(contact_email) = lower($3) OR ($4 <> '' AND right(regexp_replace(contact_phone,'\\D','','g'),9) = $4)) ORDER BY (status='confirmed') DESC, created_at DESC LIMIT 1", [start, end, String(email || '').trim(), digits(phone)]);
+  return r.rows[0] || null;
 }
 
 /* ---------- Annulation (par la gérante ou par la cliente) ---------- */
@@ -407,4 +483,4 @@ const parseImage = dataUrl => { const m = /^data:(image\/(?:jpeg|png|webp));base
 
 const isAdmin = ev => ENV.adminToken && (ev.headers['x-admin-token'] === ENV.adminToken || ev.headers['X-Admin-Token'] === ENV.adminToken);
 
-module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, notify, vapid, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };
+module.exports = { ENV, q, json, bad, eur, dur, esc, settings, catalog, price, availability, parisDate, fmtWhen, stripe, verifyStripeSignature, sendMail, mailBookingConfirmed, mailRequest, mailReminder, isAdmin, crypto, layout, rowsHtml, quoteToken, quoteLink, ensureSite, parseImage, monthCalendar, notify, vapid, confirmBooking, abandonBooking, reconcile, sameClientAt, checkPromo, promoUsed, promoLabel, issueCodesOnComplete, basePriceOf, cancelBooking, cancelToken, cancelLink, PROMO_MIN, PROMO_RULE };

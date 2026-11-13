@@ -49,8 +49,18 @@ exports.handler = async ev => {
     const existing = await L.q('SELECT id, status, checkout_ref FROM bookings WHERE idempotency_key=$1', ['bk:' + b.key]);
     if (existing.rows[0] && existing.rows[0].status === 'confirmed') return L.json(200, { kind: 'paid', bookingId: existing.rows[0].id });
     const slotCheck = await L.availability(b.date, p.duration, set);
-    if (!slotCheck.slots.some(x => x.time === b.time && x.available) && !existing.rows[0]) return L.bad('Ce créneau vient d’être pris. Choisissez-en un autre.', 409);
     const endsAt = new Date(startsAt.getTime() + (p.duration + set.margins.buffer_min) * 60000);
+    if (!slotCheck.slots.some(x => x.time === b.time && x.available) && !existing.rows[0]) {
+      /* Le créneau est pris… peut-être par cette même cliente, lors d’une tentative précédente : on le lui dit clairement */
+      const mine = await L.sameClientAt(startsAt, endsAt, contact.email, contact.phone);
+      if (mine && mine.status === 'held' && mine.checkout_ref) {
+        const sess = await L.stripe('/checkout/sessions/' + mine.checkout_ref, null, 'GET').catch(() => ({}));
+        if (sess.payment_status === 'paid') { await L.confirmBooking(mine.id, sess); return L.json(200, { kind: 'paid', when: L.fmtWhen(new Date(mine.starts_at)), email: mine.contact_email }); }
+        if (sess.status === 'open' && sess.url) return L.json(200, { kind: 'pay', url: sess.url, resumed: true });
+      }
+      if (mine && mine.status === 'confirmed') return L.json(409, { code: 'already_confirmed', error: `Vous avez déjà un rendez-vous confirmé le ${L.fmtWhen(new Date(mine.starts_at))} : votre acompte a bien été reçu. La confirmation a été envoyée à ${mine.contact_email} (pensez à vérifier vos spams). Pour réserver pour une deuxième personne, choisissez un autre créneau.` });
+      return L.json(409, { code: 'slot_taken', error: 'Ce créneau vient d’être réservé par quelqu’un d’autre. Choisissez-en un autre.' });
+    }
     const snapshot = { label, lines: p.lines, summary: p.summary, duration: p.duration, raw: ans, depositRate: set.depositRate, promo };
     let booking;
     if (existing.rows[0]) booking = (await L.q('SELECT * FROM bookings WHERE id=$1', [existing.rows[0].id])).rows[0];
