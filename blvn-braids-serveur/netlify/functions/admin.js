@@ -16,7 +16,7 @@ exports.handler = async ev => {
       await L.reconcile().catch(e => console.error(e));   // un paiement réussi est toujours confirmé, même si Stripe n’a pas pu nous prévenir
       const set0 = await L.settings();
       const [bk, rq, wh, cat, gal, rev, promos, fbk] = await Promise.all([
-        L.q("SELECT id, variant_id, status, hold_expires_at, starts_at, ends_at, duration_min, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, created_at FROM bookings WHERE starts_at > now() - interval '7 days' AND (status IN ('held','confirmed','completed','cancelled') OR (status='expired' AND snapshot->>'abandoned' = 'true' AND created_at > now() - interval '4 days')) ORDER BY starts_at"),
+        L.q("SELECT id, variant_id, status, hold_expires_at, starts_at, ends_at, duration_min, at_home, intervention_address, contact_email, contact_phone, client_name, client_note, total_cents, deposit_cents, balance_cents, snapshot, created_at FROM bookings WHERE starts_at > now() - interval '180 days' AND (status IN ('held','confirmed','completed','cancelled') OR (status='expired' AND snapshot->>'abandoned' = 'true' AND created_at > now() - interval '30 days')) ORDER BY starts_at LIMIT 600"),
         L.q("SELECT id, status, client_name, contact_email, contact_phone, description, answers, ai_suggestion, desired_location, desired_starts_at, admin_price_cents, admin_duration_min, admin_message, answered_at, created_at FROM requests WHERE created_at > now() - interval '60 days' ORDER BY created_at DESC"),
         L.q('SELECT weekday, starts_at, ends_at FROM working_hours ORDER BY weekday, starts_at'),
         L.catalog(),
